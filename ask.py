@@ -48,4 +48,13 @@ def answer(question):
 
 
 if __name__ == "__main__":
-    print(json.dumps(answer(sys.argv[1]), indent=2, ensure_ascii=False))
+    args = [a for a in sys.argv[1:] if a != "--json"]
+    if not args:
+        sys.exit('usage: python ask.py "question" [--json]')
+    out = answer(args[0])
+    if "--json" in sys.argv:
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+    else:
+        print(out["answer"])
+        print(f"\nCited pages: {', '.join(map(str, out['citations'])) or '-'}"
+              f"{'  (refused)' if out['refused'] else ''}  [{out['seconds']}s]")

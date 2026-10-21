@@ -28,7 +28,9 @@ def embed(texts):
 def qdrant():
     global _qdrant
     if _qdrant is None:
-        _qdrant = QdrantClient(path="qdrant_data")
+        # embedded mode locks the folder to one process; QDRANT_URL lifts that
+        _qdrant = QdrantClient(url=os.environ["QDRANT_URL"]) if os.environ.get("QDRANT_URL") \
+            else QdrantClient(path="qdrant_data")
         if not _qdrant.collection_exists(COLLECTION):
             _qdrant.create_collection(
                 COLLECTION,

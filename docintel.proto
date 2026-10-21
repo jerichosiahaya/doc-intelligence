@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package docintel;
+
+service DocIntel {
+  rpc Ask(AskRequest) returns (AskReply);
+}
+
+message AskRequest {
+  string question = 1;
+}
+
+message AskReply {
+  string answer = 1;
+  repeated int32 citations = 2;
+  bool refused = 3;
+  repeated int32 retrieved_pages = 4;
+  double seconds = 5;
+  int64 tokens = 6;
+}

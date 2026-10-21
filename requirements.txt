@@ -4,3 +4,8 @@ qdrant-client
 fastembed
 python-dotenv
 pyyaml
+fastapi
+uvicorn
+grpcio
+grpcio-tools
+protobuf
