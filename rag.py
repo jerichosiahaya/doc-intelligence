@@ -1,4 +1,5 @@
 """Shared setup: LiteLLM client, local embeddings, Qdrant (embedded)."""
+import atexit
 import os
 
 from dotenv import load_dotenv
@@ -49,6 +50,7 @@ def qdrant():
         # embedded mode locks the folder to one process; QDRANT_URL lifts that
         _qdrant = QdrantClient(url=os.environ["QDRANT_URL"]) if os.environ.get("QDRANT_URL") \
             else QdrantClient(path="qdrant_data")
+        atexit.register(close_qdrant)  # a clean close; the client's __del__ fails during interpreter shutdown
         if not _qdrant.collection_exists(COLLECTION):
             _qdrant.create_collection(
                 COLLECTION,
