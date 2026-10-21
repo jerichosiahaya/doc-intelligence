@@ -99,7 +99,7 @@ def main(pdf, use_vision=True):
     for c in chunks:
         if c["type"] == "table":
             c["text"] = md_table(c.pop("rows"))
-            c["page"] = c["pages"][0]
+        c.setdefault("pages", [c["page"]])  # a merged table covers several pages
     with open("chunks.jsonl", "w") as f:
         for c in chunks:
             f.write(json.dumps(c, ensure_ascii=False) + "\n")

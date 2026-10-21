@@ -22,11 +22,16 @@ def retrieve(question, k=K):
     return [h.payload | {"score": h.score} for h in hits]
 
 
+def label(c):
+    a, b = c["pages"][0], c["pages"][-1]
+    return str(a) if a == b else f"{a}-{b}"
+
+
 def answer(question):
     t0 = time.time()
     ctx = retrieve(question)
     context = "\n\n".join(
-        f"[p.{c['page']}] ({c['type']}) {c['caption']}\n{c['text']}" for c in ctx
+        f"[p.{label(c)}] ({c['type']}) {c['caption']}\n{c['text']}" for c in ctx
     )
     r = llm().chat.completions.create(
         model=os.environ["ANSWER_MODEL"],
@@ -41,7 +46,7 @@ def answer(question):
         out = json.loads(re.search(r"\{.*\}", raw, re.S).group())
     except (AttributeError, json.JSONDecodeError):
         out = {"answer": raw, "citations": [], "refused": False}
-    out["retrieved_pages"] = sorted({c["page"] for c in ctx})
+    out["retrieved_pages"] = sorted({p for c in ctx for p in c["pages"]})
     out["retrieved"] = ctx
     out["seconds"] = round(time.time() - t0, 2)
     out["tokens"] = r.usage.total_tokens if r.usage else None

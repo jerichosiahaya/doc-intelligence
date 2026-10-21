@@ -42,7 +42,7 @@ def hit(item, chunks):
     """Every supporting page came back AND every evidence string is in the retrieved text."""
     if item["expected"] == "REFUSE":
         return None
-    got = {c["page"] for c in chunks}
+    got = {p for c in chunks for p in c["pages"]}
     text = norm(" ".join(c["text"] for c in chunks))
     return all(p in got for p in item.get("pages") or []) and all(norm(e) in text for e in item.get("evidence") or [])
 
@@ -52,7 +52,7 @@ def run(item):
     row = dict(id=item["id"], type=item["type"], q=item["q"], expected=item["expected"])
     if RETRIEVAL_ONLY:
         chunks = retrieve(item["q"])
-        row.update(retrieved_pages=sorted({c["page"] for c in chunks}), retrieval_hit=hit(item, chunks),
+        row.update(retrieved_pages=sorted({p for c in chunks for p in c["pages"]}), retrieval_hit=hit(item, chunks),
                    answer_ok=None)
         return row
     a = answer(item["q"])
