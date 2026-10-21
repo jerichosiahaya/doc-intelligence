@@ -2,6 +2,13 @@
 
 This project answers questions about company reports. Each answer shows the pages it comes from. The system refuses to answer when the reports do not contain the answer.
 
+The project has two services:
+
+| Service | Folder | Technology | Role |
+|---|---|---|---|
+| Server | `server/` | Python, FastAPI, gRPC | Reads PDFs, searches, answers, keeps history |
+| UI | `ui/` | React, TypeScript, Vite | Web app. It talks to the server only through the REST API. |
+
 The sample document is the fictional "Kirana Logistics Group Annual Report 2025" (13 pages). The pipeline also works on other PDF files without code changes. You can ingest more than one document and ask questions across all of them.
 
 ## Screenshots
@@ -36,30 +43,53 @@ The sample document is the fictional "Kirana Logistics Group Annual Report 2025"
 
 ### Requirements
 
-- Python 3. The project was tested with Python 3.14 only.
+- Python 3 (for the server). The project was tested with Python 3.14 only.
+- Node 22 or later (for the UI, if you do not use Docker).
 - A LiteLLM proxy (or any OpenAI-compatible API) with these models:
   - a vision model that accepts images,
   - a text model for answers,
   - a text model for grading (can be the same model as the answer model).
 - Internet access for the first run. The local embedding models download once.
-- Docker, only if you want to run Qdrant or Postgres as a server (optional).
+- Docker, to run the whole stack with one command, or to run Qdrant and Postgres as servers (optional).
 
-### Run in five commands
+### Run with Docker (three commands)
+
+This starts Qdrant, Postgres, the server, and the UI.
 
 ```bash
+cp server/.env.example server/.env      # then edit server/.env (see Configuration)
+API_KEY=choose-a-key docker compose up -d --build
+docker compose run --rm -v "$PWD/report.pdf:/data/report.pdf:ro" server python ingest.py /data/report.pdf
+```
+
+Open `http://localhost:8080` in a browser. The page asks for the API key that you chose.
+
+### Run without Docker
+
+Run the Python commands in the `server/` folder.
+
+```bash
+cd server
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env            # then edit .env (see Configuration)
 python ingest.py path/to/report.pdf
-python server.py
+python server.py                # REST on :8000, gRPC on :50051
 ```
 
-After the last command, open `http://localhost:8000/` in a browser.
+In a second terminal, start the UI:
+
+```bash
+cd ui
+npm install
+npm run dev                     # http://localhost:5173
+```
 
 ### Ask a question without the server
 
-1. Stop `server.py` if it is running. See [Known limitations](#known-limitations) for the reason.
-2. Run:
+1. Run these commands in `server/`.
+2. Stop `server.py` if it is running. See [Known limitations](#known-limitations) for the reason.
+3. Run:
 
    ```bash
    python ask.py "What was net profit in 2024?"
@@ -76,7 +106,7 @@ python ingest.py path/to/new_report.pdf
 
 The system keeps each document under its file name (without `.pdf`). Ingesting the same file name again replaces the old data. Ingesting a different file name adds a document to the index.
 
-Ingestion also copies the PDF to `docs/`. The web UI uses this copy to show cited pages.
+Ingestion also copies the PDF to `server/docs/`. The server uses this copy to show cited pages.
 
 ## How the system works
 
@@ -161,14 +191,16 @@ The system compares each cited page with the pages that it retrieved. A citation
 
 ## Interfaces
 
-All four interfaces call the same function, `ask.answer()`.
+All four interfaces call the same function, `ask.answer()`. The CLI, REST, and gRPC interfaces belong to the server. The web UI is a separate service that uses the REST interface.
 
 | Interface | Start | Address |
 |---|---|---|
-| CLI | `python ask.py "question"` | Terminal |
-| REST | `python server.py` | `http://localhost:8000/ask` |
-| gRPC | `python server.py` | `localhost:50051` |
-| Web UI | `python server.py` | `http://localhost:8000/` |
+| CLI | `python ask.py "question"` (in `server/`) | Terminal |
+| REST | `python server.py` (in `server/`) | `http://localhost:8000/ask` |
+| gRPC | `python server.py` (in `server/`) | `localhost:50051` |
+| Web UI | `npm run dev` (in `ui/`), or Docker | `http://localhost:5173` (development), `http://localhost:8080` (Docker) |
+
+The server has no web page of its own. The route `/` does not exist.
 
 ### CLI
 
@@ -220,7 +252,6 @@ Other routes:
 | `GET /conversations` | The 50 most recent conversations. Needs history. |
 | `GET /conversations/{id}` | One conversation with all its messages. Needs history. |
 | `DELETE /conversations/{id}` | Delete a conversation and its messages (status 204). Needs history. |
-| `GET /` | The web UI. No key needed. |
 
 Status codes:
 
@@ -256,7 +287,9 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. docintel.prot
 
 ### Web UI
 
-Open `http://localhost:8000/`. Type a question, optionally choose one document, and select **Ask**. The page shows:
+The UI is a separate service in `ui/`. It is a React and TypeScript app that Vite builds. It uses no UI library and no state library.
+
+Open `http://localhost:5173` (development) or `http://localhost:8080` (Docker). Type a question, optionally choose one document, and select **Ask**. The page shows:
 
 - the questions and answers of the current conversation, in order,
 - a "Not in the document" badge when the system refuses,
@@ -266,23 +299,47 @@ Open `http://localhost:8000/`. Type a question, optionally choose one document, 
 
 If the server needs a key, the page shows a key field. The page keeps the key in the browser session only. The page supports light and dark mode.
 
+#### How the UI reaches the server
+
+The browser always calls `/api/...` on the host that served the page. Something then forwards the call to the server and removes the `/api` prefix:
+
+| Where | What forwards the call | Setting |
+|---|---|---|
+| `npm run dev` | The Vite dev server | `API_PROXY` (default `http://localhost:8000`) |
+| Docker | nginx in the UI container | `API_UPSTREAM` (default `http://server:8000`), `NGINX_RESOLVER` (default `127.0.0.11`) |
+| Static hosting, no proxy | Nothing. The page calls the server directly. | Build with `VITE_API_URL=https://api.example.com`, and set `CORS_ORIGINS` on the server |
+
+Because the browser sees one host, the Docker setup needs no CORS setting.
+
+#### UI source
+
+| File | Role |
+|---|---|
+| `ui/src/api.ts` | The only code that calls the server. Adds the API key header, turns errors into `ApiError`. |
+| `ui/src/App.tsx` | State of the page: conversations, current thread, errors, key prompt |
+| `ui/src/components/` | `AskForm`, `AnswerCard` (with the cited page image), `Sidebar` (history), `KeyBar` |
+| `ui/src/*.test.ts(x)` | 19 tests with Vitest and Testing Library, against a fake of the server API |
+| `ui/Dockerfile`, `ui/nginx.conf.template` | Production image: Vite build, served by nginx, `/api` forwarded to the server |
+
+Commands, in `ui/`: `npm run dev`, `npm run typecheck`, `npm test`, `npm run build`.
+
 ### Authentication
 
 Set `API_KEY` in `.env` to turn on authentication. Use a comma-separated list for more than one key. REST clients send the header `X-API-Key`. gRPC clients send the metadata `x-api-key`.
 
-The routes `/health` and `/` need no key. The page `/` contains no data.
+The route `/health` needs no key. It returns no data about the documents.
 
 If `HOST` is not a local address, `server.py` refuses to start without `API_KEY`.
 
 ### Run the interfaces as separate processes
 
-By default, `python server.py` runs REST and gRPC in one process. To run them separately:
+By default, `python server.py` runs REST and gRPC in one process. To run them separately (in `server/`):
 
 ```bash
-docker compose up -d                       # Qdrant server (set QDRANT_PORT if port 6333 is taken)
-# set QDRANT_URL=http://localhost:6333 in .env, then ingest again:
+docker compose up -d qdrant                # Qdrant server (set QDRANT_PORT if port 6333 is taken)
+# set QDRANT_URL=http://localhost:6333 in server/.env, then ingest again:
 python ingest.py path/to/report.pdf
-python server.py rest                      # REST and web UI
+python server.py rest                      # REST only
 python server.py grpc                      # gRPC only
 ```
 
@@ -294,9 +351,11 @@ When you set `DATABASE_URL`, the server saves every question and answer in Postg
 
 ### Turn it on
 
+In the Docker stack, history is already on. For a local server (in `server/`):
+
 ```bash
 docker compose up -d postgres        # set POSTGRES_PORT if port 5432 is taken
-# add to .env:
+# add to server/.env:
 # DATABASE_URL=postgresql://docintel:docintel@localhost:5432/docintel
 python server.py
 ```
@@ -325,7 +384,9 @@ Deleting a conversation deletes its messages.
 
 ## Configuration
 
-Set these values in `.env`. Do not commit this file. The file `.gitignore` excludes it.
+### Server
+
+Set these values in `server/.env`. Do not commit this file. The file `.gitignore` excludes it. In the Docker stack, the server container reads the same file.
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
@@ -339,18 +400,39 @@ Set these values in `.env`. Do not commit this file. The file `.gitignore` exclu
 | `RERANK` | No | off | Set to `1` to turn on the reranker |
 | `RERANK_N` | No | 20 | Number of candidates that the reranker scores |
 | `RERANK_MODEL` | No | `Xenova/ms-marco-MiniLM-L-12-v2` | Local cross-encoder. Other supported models include `BAAI/bge-reranker-base`. |
-| `QDRANT_URL` | No | | URL of a Qdrant server. If not set, the system uses a local folder (`qdrant_data/`). |
+| `QDRANT_URL` | No | | URL of a Qdrant server. If not set, the system uses a local folder (`server/qdrant_data/`). |
 | `QDRANT_PORT` | No | 6333 | Host port that `docker-compose.yml` uses |
 | `API_KEY` | No | | One or more API keys, separated by commas. If not set, there is no authentication. |
 | `DATABASE_URL` | No | | Postgres connection string. If set, history is on. |
 | `POSTGRES_PORT`, `POSTGRES_PASSWORD` | No | 5432, `docintel` | Host port and password that `docker-compose.yml` uses. Change the password on any shared host. |
 | `HOST` | No | `127.0.0.1` | Bind address of `server.py` |
-| `PORT` | No | 8000 | REST and web UI port |
+| `PORT` | No | 8000 | REST port |
 | `GRPC_PORT` | No | 50051 | gRPC port |
+| `CORS_ORIGINS` | No | | Origins (separated by commas) that may call the REST API from a browser. Needed only when the UI is on another host without a proxy. |
 | `PRICE_IN`, `PRICE_OUT` | No | | Answer model price, in USD per million tokens |
 | `PRICE_VISION_IN`, `PRICE_VISION_OUT` | No | | Vision model price, in USD per million tokens |
 
-> **Note:** If you change the Qdrant collection layout (for example, after you update from an older version), delete `qdrant_data/` and ingest again.
+> **Note:** If you change the Qdrant collection layout (for example, after you update from an older version), delete `server/qdrant_data/` and ingest again.
+
+### Docker Compose
+
+Set these in your shell or in a `.env` file next to `docker-compose.yml`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `API_KEY` | | Required for the `server` service. The server refuses to listen on a non-local address without it. |
+| `UI_PORT` | 8080 | Host port of the UI |
+| `SERVER_PORT`, `GRPC_PORT` | 8000, 50051 | Host ports of the server |
+| `QDRANT_PORT` | 6333 | Host port of Qdrant. Change it if another service uses 6333. |
+| `POSTGRES_PORT`, `POSTGRES_PASSWORD` | 5432, `docintel` | Host port and password of Postgres. Change the password on any shared host. |
+
+### UI
+
+| Variable | When | Meaning |
+|---|---|---|
+| `API_PROXY` | `npm run dev` | Where Vite forwards `/api`. Default `http://localhost:8000`. |
+| `VITE_API_URL` | Build time | Call the server directly instead of through `/api`. Needs `CORS_ORIGINS` on the server. |
+| `API_UPSTREAM`, `NGINX_RESOLVER` | UI container start | Where nginx forwards `/api`, and which DNS server it uses to find it |
 
 ## Logging and cost
 
@@ -442,13 +524,20 @@ Each option fixed the same one question (the cause of the fourth-quarter service
 
 ## Tests and continuous integration
 
-Run the tests:
+Run the server tests (in `server/`):
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q                             # 30 fast tests; no model download, no API, no database
+pytest -q                             # 32 fast tests; no model download, no API, no database
 RUN_MODEL_TESTS=1 pytest -q           # also runs 4 tests with the real local models
 DATABASE_URL=postgresql://docintel:docintel@localhost:5432/docintel pytest -q   # also runs 8 history tests
+```
+
+Run the UI tests (in `ui/`):
+
+```bash
+npm test                              # 19 tests
+npm run typecheck
 ```
 
 | File | What it tests |
@@ -456,12 +545,17 @@ DATABASE_URL=postgresql://docintel:docintel@localhost:5432/docintel pytest -q   
 | `tests/test_checks.py` | Number parsing, total checks, table-against-vision check |
 | `tests/test_ingest_helpers.py` | Markdown tables, captions, prose chunking |
 | `tests/test_ask.py` | Citation check, source merging, page labels, JSON fallback, logging (with a fake model) |
-| `tests/test_server.py` | REST routes, validation, error codes, authentication, page images, path-traversal attempt |
+| `tests/test_server.py` | REST routes, validation, error codes, authentication, CORS, page images, path-traversal attempt |
 | `tests/test_history.py` | The history tables against a real Postgres: titles, ordering, follow-ups, deletion (opt-in) |
 | `tests/test_server_history.py` | History in the REST routes: history off, a failed save, the full flow with Postgres |
 | `tests/test_retrieval.py` | Dense, hybrid, and reranked search, the document filter, and re-ingestion, with the real local models (opt-in) |
+| `ui/src/api.test.ts` | Key header, error handling, request format |
+| `ui/src/components/AnswerCard.test.tsx` | Refusal badge, citation buttons, page image, load errors |
+| `ui/src/App.test.tsx` | Asking, errors, follow-ups in one conversation, history list, reopen, two-step delete, new chat, key prompt |
 
-The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14 for each push and pull request. It passed on both versions on the last push. Since then, the workflow gained a Postgres service so that the history tests run too. That change has **not run yet**.
+The UI tests run against an in-memory fake of the server API. They do not test the real server.
+
+The workflow `.github/workflows/ci.yml` has two jobs for each push and pull request. The `server` job runs `pytest -q` on Python 3.12 and 3.14 with a Postgres service, so the history tests run. The `ui` job runs the type-check, the tests, and the build on Node 22. An earlier version of the workflow (server job only) passed. The split into two jobs has **not run yet**.
 
 ## Key decisions and trade-offs
 
@@ -472,6 +566,9 @@ The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14
 | Keep each table in one chunk | A split table loses its header. Answers then use the wrong column. | Large tables make large chunks. |
 | Join tables that continue on the next page | Table 2 (facilities) spans pages 7 and 8. | The rule needs the header row to repeat. |
 | Keep hybrid search and the reranker off by default | The first test shows a small gain on one question only. | A possible quality gain is not used until the full test. |
+| Make the UI a separate service (React, TypeScript, Vite) that uses only the REST API | The UI and the server can change, deploy, and scale on their own. The REST API is the contract between them. | Two images and two build steps. The UI cannot call the CLI or gRPC. |
+| Forward `/api` through the UI's own web server (nginx or Vite) | The browser sees one host, so no CORS and no cross-site rules. | The UI image must know where the server is (`API_UPSTREAM`). |
+| Use no UI library and no state library | The app is small. Fewer dependencies to keep up to date. | More hand-written CSS. Revisit if the UI grows. |
 | Use local models for embeddings, keyword search, and reranking | No second API key. Evaluation runs again at no cost. | The models are small (384 dimensions for embeddings). |
 | Evaluate retrieval with evidence strings | A page-only check passes without the needed fact. | You must write evidence strings for each question. |
 | Check citations against retrieved pages | The model can cite a page it never saw. | The check cannot tell if a retrieved page really supports the fact. |
@@ -493,6 +590,8 @@ The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14
 - **History is stored but not used.** The model does not see earlier turns. A follow-up such as "And in 2023?" does not know the earlier question. A query rewrite that uses the history is not built.
 - **No users.** Every client with a valid key sees all conversations. There is no per-user separation.
 - **History is a server feature.** The CLI does not save history.
+- **UI security.** The UI keeps the API key in the browser session. The nginx container has no TLS. Put a TLS proxy in front of it on any network that is not trusted.
+- **UI tests use a fake server.** A change to the REST API that the fake does not copy can pass the UI tests and still break the page.
 - **Cost is an estimate.** Cost comes from the token counts that the proxy reports and from the prices that you set. If the proxy does not report tokens, the report shows zero.
 - **Few documents tested.** The pipeline was tested on one report. Other layouts (for example, scanned pages with no text layer, or tables without lines) are not tested.
 - **Not yet verified end to end.** The vision pass, the answer step, and the judge were not run with a real model in this repository state. Only the code paths that need no model API were run.
@@ -508,6 +607,7 @@ The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14
 | Cited page image in the web UI | Done |
 | Document filter and multi-document questions | Done. Top-k is shared across documents. |
 | Authentication, request logging, cost report | Done (one static key, no rate limit, no TLS) |
+| UI as a separate React service | Done: `ui/`, with its own tests, image, and CI job |
 | Conversation history in Postgres | Done: save, list, reopen, delete. History is not used as model context. |
 | Qdrant server and separate processes | Done (`docker-compose.yml`, `server.py rest\|grpc`) |
 | More evaluation questions from a second reviewer | Not done. This needs a person. |
@@ -528,24 +628,27 @@ The author used Claude Code (an AI coding assistant) to plan the design, write t
 
 ## Repository files
 
-| File | Purpose |
-|---|---|
-| `ingest.py` | Reads a PDF, makes chunks, runs number checks, and fills the index |
-| `ask.py` | Finds chunks, gets an answer, and checks citations. Also the CLI. |
-| `server.py` | REST, gRPC, and web UI (one process, or separate with `rest` or `grpc`) |
-| `rag.py` | Shared setup: model client, embeddings, reranker, Qdrant |
-| `checks.py` | Number checks (totals, table against vision) |
-| `reqlog.py` | Writes `logs/requests.jsonl` |
-| `costs.py` | Summary of time, tokens, and cost |
-| `eval.py` and `eval.yaml` | The evaluation script and its 19 questions |
-| `docintel.proto` | gRPC service definition |
-| `docintel_pb2.py`, `docintel_pb2_grpc.py` | Generated gRPC code. Do not edit. |
-| `static/index.html` | Web UI |
-| `history.py` | Conversation history in Postgres |
-| `docker-compose.yml` | Qdrant server and Postgres (both optional) |
-| `assets/` | Screenshots for this README |
-| `tests/`, `pytest.ini`, `requirements-dev.txt` | Automated tests |
-| `.github/workflows/ci.yml` | Continuous integration |
-| `.env.example` | Template for the configuration |
+```
+server/                      The server service (Python)
+  ingest.py                  Reads a PDF, makes chunks, runs number checks, and fills the index
+  ask.py                     Finds chunks, gets an answer, checks citations. Also the CLI.
+  server.py                  REST and gRPC (one process, or separate with `rest` or `grpc`)
+  rag.py                     Shared setup: model client, embeddings, reranker, Qdrant
+  checks.py                  Number checks (totals, table against vision)
+  history.py                 Conversation history in Postgres
+  reqlog.py, costs.py        Request log, and the summary of time, tokens, and cost
+  eval.py, eval.yaml         The evaluation script and its 19 questions
+  docintel.proto             gRPC service definition
+  docintel_pb2*.py           Generated gRPC code. Do not edit.
+  tests/                     Server tests
+  Dockerfile, .env.example   Image and configuration template
+ui/                          The UI service (React and TypeScript)
+  src/                       App, components, API client, tests
+  Dockerfile                 Vite build, served by nginx
+  nginx.conf.template        Forwards /api to the server
+docker-compose.yml           Qdrant, Postgres, server, and UI
+assets/                      Screenshots for this README
+.github/workflows/ci.yml     Continuous integration (server job and UI job)
+```
 
-Files that the system creates (excluded from Git): `.env`, `qdrant_data/`, `docs/`, `.cache/`, `logs/`, `chunks.jsonl`, `warnings.json`, `results.json`.
+Files that the server creates (excluded from Git), in `server/`: `.env`, `qdrant_data/`, `docs/`, `.cache/`, `logs/`, `chunks.jsonl`, `warnings.json`, `results.json`.
