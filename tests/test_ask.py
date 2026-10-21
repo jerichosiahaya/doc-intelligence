@@ -1,0 +1,82 @@
+import json
+from types import SimpleNamespace
+
+import ask
+
+D = "report"
+SRC = [{"doc": D, "page": 4}, {"doc": D, "page": 5}]
+
+
+def test_verify_keeps_retrieved_and_rejects_others():
+    ok, bad = ask.verify_citations([{"doc": D, "page": 4}, {"doc": D, "page": 9}], SRC)
+    assert ok == [{"doc": D, "page": 4}] and bad == [{"doc": D, "page": 9}]
+
+
+def test_verify_accepts_bare_pages_for_one_document():
+    ok, bad = ask.verify_citations([4, "p.5", "12", None, 4], SRC)
+    assert ok == [{"doc": D, "page": 4}, {"doc": D, "page": 5}]
+    assert bad == [{"doc": D, "page": 12}]
+
+
+def test_verify_rejects_bare_pages_when_documents_are_ambiguous():
+    src = SRC + [{"doc": "other", "page": 4}]
+    ok, bad = ask.verify_citations([4], src)
+    assert ok == [] and bad == [{"doc": None, "page": 4}]
+
+
+def test_verify_handles_empty():
+    assert ask.verify_citations(None, SRC) == ([], [])
+
+
+def test_sources_merge_pages_without_duplicates():
+    chunks = [{"doc": D, "pages": [7, 8]}, {"doc": D, "pages": [8]}, {"doc": "b", "pages": [1]}]
+    assert ask.sources(chunks) == [{"doc": D, "page": 7}, {"doc": D, "page": 8}, {"doc": "b", "page": 1}]
+
+
+def test_label():
+    assert ask.label({"doc": D, "pages": [4]}) == "report p.4"
+    assert ask.label({"doc": D, "pages": [7, 8]}) == "report p.7-8"
+
+
+def _fake_llm(content):
+    usage = SimpleNamespace(total_tokens=30, prompt_tokens=20, completion_tokens=10)
+    resp = SimpleNamespace(usage=usage, choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    create = lambda **kw: resp
+    return lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+
+def _patch(monkeypatch, content):
+    chunks = [{"doc": D, "pages": [4], "type": "table", "caption": "Table 1", "text": "| a |"}]
+    logged = []
+    monkeypatch.setenv("ANSWER_MODEL", "m")
+    monkeypatch.setattr(ask, "retrieve", lambda q, k=6, doc=None: chunks)
+    monkeypatch.setattr(ask, "llm", _fake_llm(content))
+    monkeypatch.setattr(ask, "log", lambda **f: logged.append(f))
+    return logged
+
+
+def test_answer_rejects_hallucinated_page_and_logs(monkeypatch):
+    raw = json.dumps({"answer": "x [report p.4]", "citations": [{"doc": D, "page": 4}, {"doc": D, "page": 40}],
+                      "refused": False})
+    logged = _patch(monkeypatch, raw)
+    out = ask.answer("q?")
+    assert out["citations"] == [{"doc": D, "page": 4}]
+    assert out["rejected_citations"] == [{"doc": D, "page": 40}]
+    assert (out["prompt_tokens"], out["completion_tokens"]) == (20, 10)
+    assert logged[0]["status"] == "ok" and logged[0]["rejected"] == 1
+
+
+def test_answer_survives_non_json_reply(monkeypatch):
+    _patch(monkeypatch, "I think it was 468.")
+    out = ask.answer("q?")
+    assert out["answer"] == "I think it was 468." and out["citations"] == [] and out["refused"] is False
+
+
+def test_answer_logs_errors(monkeypatch):
+    logged = _patch(monkeypatch, "{}")
+    monkeypatch.setattr(ask, "llm", lambda: (_ for _ in ()).throw(RuntimeError("proxy down")))
+    try:
+        ask.answer("q?")
+    except RuntimeError:
+        pass
+    assert logged[0]["status"] == "error" and "proxy down" in logged[0]["error"]

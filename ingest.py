@@ -18,7 +18,7 @@ import pymupdf as fitz
 
 from reqlog import log
 from checks import check_totals, missing_numbers
-from rag import COLLECTION, embed, llm, models, qdrant, sparse
+from rag import COLLECTION, close_qdrant, embed, llm, models, qdrant, sparse
 
 VISION_PROMPT = (
     "Transcribe this report page. Output all text and numbers exactly as shown. "
@@ -132,7 +132,7 @@ def main(pdf, use_vision=True):
         models.PointStruct(id=str(uuid.uuid4()), vector={"dense": d, "bm25": b}, payload=c)
         for c, d, b in zip(chunks, embed(texts), sparse(texts))
     ])
-    q.close()
+    close_qdrant()
     json.dump(warnings, open("warnings.json", "w"), indent=2)
     for w in warnings:
         print("WARNING", w)

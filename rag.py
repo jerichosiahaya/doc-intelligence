@@ -56,3 +56,11 @@ def qdrant():
                 sparse_vectors_config={"bm25": models.SparseVectorParams(modifier=models.Modifier.IDF)},
             )
     return _qdrant
+
+
+def close_qdrant():
+    """Release the client (and the folder lock in embedded mode). The next qdrant() call reopens it."""
+    global _qdrant
+    if _qdrant is not None:
+        _qdrant.close()
+        _qdrant = None
