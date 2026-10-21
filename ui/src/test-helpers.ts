@@ -62,7 +62,8 @@ export function fakeServer(o: Options = {}) {
         const r = o.ask ? o.ask(body) : answer();
         return r instanceof Response ? r : json(r);
       }
-      if (path.startsWith("/page/")) return new Response(new Blob(["png"]), { status: 200 });
+      // a string body: Node's Response cannot read the jsdom Blob
+      if (path.startsWith("/page/")) return new Response("png", { status: 200 });
       return json({ detail: "not found" }, 404);
     }),
   );
