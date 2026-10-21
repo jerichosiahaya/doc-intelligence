@@ -3,6 +3,7 @@ import os
 
 from dotenv import load_dotenv
 from fastembed import SparseTextEmbedding, TextEmbedding
+from fastembed.rerank.cross_encoder import TextCrossEncoder
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 
@@ -11,9 +12,11 @@ load_dotenv()
 COLLECTION = "chunks"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 384 dims, runs locally
 SPARSE_MODEL = "Qdrant/bm25"  # keyword side of hybrid search, runs locally
+RERANK_MODEL = os.environ.get("RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-12-v2")  # cross-encoder, runs locally
 
 _embedder = None
 _sparse = None
+_reranker = None
 _qdrant = None
 
 
@@ -32,6 +35,12 @@ def sparse(texts, query=False):
     _sparse = _sparse or SparseTextEmbedding(SPARSE_MODEL)
     fn = _sparse.query_embed if query else _sparse.embed
     return [models.SparseVector(indices=v.indices.tolist(), values=v.values.tolist()) for v in fn(texts)]
+
+
+def rerank_scores(query, texts):
+    global _reranker
+    _reranker = _reranker or TextCrossEncoder(RERANK_MODEL)
+    return list(_reranker.rerank(query, texts))
 
 
 def qdrant():

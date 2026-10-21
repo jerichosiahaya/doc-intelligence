@@ -5,7 +5,7 @@ import re
 import sys
 import time
 
-from rag import COLLECTION, embed, llm, models, qdrant, sparse
+from rag import COLLECTION, embed, llm, models, qdrant, rerank_scores, sparse
 
 K = int(os.environ.get("TOP_K", 6))
 
@@ -18,10 +18,13 @@ Reply with JSON only: {"answer": str, "citations": [page ints], "refused": bool}
 
 
 def retrieve(question, k=K):
-    """SEARCH=dense (default) or hybrid (dense + BM25, fused with RRF)."""
+    """SEARCH=dense (default) or hybrid (dense + BM25, fused with RRF).
+    RERANK=1 fetches RERANK_N candidates and keeps the k best by a local cross-encoder."""
+    rerank = os.environ.get("RERANK") == "1"
+    n_out = int(os.environ.get("RERANK_N", 20)) if rerank else k
     dense = embed([question])[0]
     if os.environ.get("SEARCH", "dense") == "hybrid":
-        n = max(3 * k, 20)  # each side contributes n candidates before fusion
+        n = max(3 * n_out, 20)  # each side contributes n candidates before fusion
         hits = qdrant().query_points(
             COLLECTION,
             prefetch=[
@@ -29,11 +32,17 @@ def retrieve(question, k=K):
                 models.Prefetch(query=sparse([question], query=True)[0], using="bm25", limit=n),
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=k,
+            limit=n_out,
         ).points
     else:
-        hits = qdrant().query_points(COLLECTION, query=dense, using="dense", limit=k).points
-    return [h.payload | {"score": h.score} for h in hits]
+        hits = qdrant().query_points(COLLECTION, query=dense, using="dense", limit=n_out).points
+    out = [h.payload | {"score": h.score} for h in hits]
+    if rerank:
+        scores = rerank_scores(question, [f"{c['caption']}\n{c['text']}" for c in out])
+        for c, sc in zip(out, scores):
+            c["score"] = float(sc)
+        out.sort(key=lambda c: -c["score"])
+    return out[:k]
 
 
 def label(c):
