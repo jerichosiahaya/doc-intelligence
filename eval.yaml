@@ -1,0 +1,21 @@
+# pages = pages that must be retrieved; expected REFUSE = system must decline.
+# Answers verified by hand against the PDF; re-check #4 and #5 (calculations).
+- {id: 1, type: prose, q: "Where is Kirana headquartered, and when was it founded?", expected: "Bangkok, Thailand; founded 2009", pages: [1]}
+- {id: 2, type: prose, q: "What caused the service dip in the fourth quarter?", expected: "Severe flooding in southern Thailand closed sections of the main southern highway; line-haul to Hat Yai was rerouted via slower inland roads", pages: [6]}
+- {id: 3, type: table, q: "What was net profit in 2024?", expected: "THB 468 million", pages: [4]}
+- {id: 4, type: table_calc, q: "By what percent did revenue grow from 2024 to 2025?", expected: "About 10.0% (7,655 to 8,420 THB million)", pages: [4]}
+- {id: 5, type: table_calc, q: "What was net debt divided by EBITDA in 2025?", expected: "About 1.7 times (2,310 / 1,347), within the 2.0x internal limit", pages: [4]}
+- {id: 6, type: table, q: "Which facility had the highest utilisation in 2025?", expected: "Cibitung, Bekasi (ID-CBT) at 96%", pages: [7, 8]}
+- {id: 7, type: table, q: "How many cold-chain facilities are listed in the major facilities table, and where are they?", expected: "6: Bang Na, Rayong, Cibitung, Denpasar, Thu Duc (Ho Chi Minh City), Johor Bahru", pages: [7, 8]}
+- {id: 8, type: chart, q: "What was revenue in the fourth quarter of 2025?", expected: "THB 2,305 million", pages: [5]}
+- {id: 9, type: chart, q: "Which month had the lowest on-time delivery in 2025, and what was it?", expected: "November, 89.7%", pages: [6]}
+- {id: 10, type: chart, q: "What share of 2025 revenue came from Indonesia?", expected: "31%", pages: [5]}
+- {id: 11, type: diagram, q: "How many trucks per day run between Cikarang and Surabaya?", expected: "64 trucks per day", pages: [7]}
+- {id: 12, type: diagram, q: "How is freight moved between Thailand and Indonesia?", expected: "By sea via Tanjung Priok, 3 sailings per week (Laem Chabang to Cikarang)", pages: [7]}
+- {id: 13, type: tile, q: "What was customer NPS in 2025 and in 2024?", expected: "52 in 2025, 47 in 2024", pages: [3]}
+- {id: 14, type: conflict, q: "How many electric trucks were added in 2025?", expected: "82. The CEO letter says 96 but the errata corrects it to 82", pages: [2, 9, 12]}
+- {id: 15, type: scan, q: "What is the 2026 tariff for cold-chain pallet storage, and does it include VAT?", expected: "THB 780 per pallet per month, excluding 7% VAT", pages: [13]}
+- {id: 16, type: scan, q: "What is the standard rate for a full-truckload line-haul from Bangkok to Hat Yai?", expected: "THB 21,500 per trip", pages: [13]}
+- {id: 17, type: unanswerable, q: "What volume discount applies to a customer storing 1,000 pallets?", expected: REFUSE}
+- {id: 18, type: unanswerable, q: "What dividend per share did Kirana pay for 2025?", expected: REFUSE}
+- {id: 19, type: partial, q: "Which facilities are on the consolidation watch list?", expected: "Cannot be determined: the rule needs two consecutive quarters below 65% but only annual utilisation is given. Hat Yai (64%) and Da Nang (62%) are below 65% for the year", pages: [7, 8]}

@@ -1,0 +1,6 @@
+pymupdf
+openai
+qdrant-client
+fastembed
+python-dotenv
+pyyaml
