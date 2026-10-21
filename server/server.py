@@ -1,6 +1,7 @@
 """Usage: python server.py [both|rest|grpc]
 
-both (default): REST + web UI on :8000 and gRPC on :50051 in one process.
+The API service. The web UI is a separate service (../ui) that calls this REST API.
+both (default): REST on :8000 and gRPC on :50051 in one process.
 rest / grpc: one interface per process. Embedded Qdrant locks its folder to one
 process, so run separate processes only with QDRANT_URL set (see docker-compose.yml).
 """
@@ -16,7 +17,8 @@ import grpc
 import pymupdf
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 import history
@@ -158,6 +160,16 @@ async def lifespan(_):
 app = FastAPI(title="Document Intelligence", lifespan=lifespan)
 
 
+def apply_cors(application, origins):
+    """Only needed when the UI is served from another origin. Behind the UI's own proxy, leave it off."""
+    if origins:
+        application.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"],
+                                   allow_headers=["Content-Type", "X-API-Key"])
+
+
+apply_cors(app, [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()])
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "history": history.enabled()}
@@ -215,11 +227,6 @@ def page_image(doc: str, page: int):
             raise HTTPException(404, f"{doc} has {len(pdf)} pages")
         png = pdf[page - 1].get_pixmap(dpi=110).tobytes("png")
     return Response(png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
-
-
-@app.get("/")
-def ui():
-    return FileResponse(Path(__file__).parent / "static" / "index.html")
 
 
 if __name__ == "__main__":

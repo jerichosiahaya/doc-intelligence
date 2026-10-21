@@ -3,10 +3,30 @@ import server
 SRC = {"doc": "demo", "page": 1}
 
 
-def test_health_and_ui_are_open(client, monkeypatch):
+def test_health_is_open(client, monkeypatch):
     monkeypatch.setattr(server, "API_KEYS", ["secret"])
     assert client.get("/health").status_code == 200
-    assert client.get("/").status_code == 200
+
+
+def test_cors_allows_only_the_configured_origin():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    other = FastAPI()
+    other.get("/x")(lambda: {"ok": True})
+    server.apply_cors(other, ["https://ui.example"])
+    c = TestClient(other)
+    ok = c.get("/x", headers={"Origin": "https://ui.example"})
+    bad = c.get("/x", headers={"Origin": "https://evil.example"})
+    assert ok.headers["access-control-allow-origin"] == "https://ui.example"
+    assert "access-control-allow-origin" not in bad.headers
+    pre = c.options("/x", headers={"Origin": "https://ui.example", "Access-Control-Request-Method": "POST",
+                                   "Access-Control-Request-Headers": "x-api-key,content-type"})
+    assert pre.status_code == 200
+
+
+def test_cors_is_off_by_default(client):
+    assert "access-control-allow-origin" not in client.get("/health", headers={"Origin": "https://x.example"}).headers
 
 
 def test_ask_ok(client):

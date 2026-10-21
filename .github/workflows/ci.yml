@@ -3,8 +3,11 @@ on:
   push:
   pull_request:
 jobs:
-  test:
+  server:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
     services:
       postgres:
         image: postgres:16-alpine
@@ -26,5 +29,6 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: server/requirements*.txt
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: pytest -q   # model tests are skipped here; run them locally with RUN_MODEL_TESTS=1
