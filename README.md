@@ -473,9 +473,12 @@ The tools then have the names `mcp__docintel__ask_documents`, `mcp__docintel__li
 
 1. send `initialize`, wait for the reply, and then send the notification `notifications/initialized`, before any other request;
 2. run a tool with the method `tools/call` and the parameters `{name, arguments}`, not with the tool name as the method;
-3. match each reply to its request by `id`.
+3. match each reply to its request by `id` (and fail the waiting requests when the server exits);
+4. when it turns a tool's JSON schema into pi parameters, make an argument optional unless the schema lists it in `required`, and read "string or null" (`anyOf` with a `null` branch) as an optional string. Otherwise the assistant must fill in every argument of `ask_documents` on every call.
 
 A bridge that skips these steps cannot use any standard MCP server, including this one. The tool `get_page_image` returns a large image (about 90 KB as text). If your bridge cannot pass images to the model as images, leave this tool out.
+
+The file `mcp-server/pi/docintel.ts` is an example pi extension for a bridge of this kind. Copy it to `~/.pi/agent/extensions/`, and change the two paths in it. It leaves out `get_page_image`. It was tested with a bridge that does the four things above, in pi's `--mode rpc`, which registered the four tools, and with a direct call of each tool's `execute` function. It was **not** tested with a real model call, because the model key of the test machine was invalid.
 
 ### Security
 
@@ -650,7 +653,7 @@ Run the MCP server tests (in `mcp-server/`):
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
-pytest -q                             # 22 tests
+pytest -q                             # 23 tests
 ```
 
 | File | What it tests |
@@ -723,7 +726,7 @@ The workflow `.github/workflows/ci.yml` has three jobs for each push and pull re
 | Cited page image in the web UI | Done |
 | Document filter and multi-document questions | Done. Top-k is shared across documents. |
 | Authentication, request logging, cost report | Done (one static key, no rate limit, no TLS) |
-| MCP server for AI assistants | Done: `mcp-server/`, 5 tools, 22 tests. Tested with the MCP SDK client and Claude Code. Not tested with opencode or pi. |
+| MCP server for AI assistants | Done: `mcp-server/`, 5 tools, 23 tests. Tested with the MCP SDK client and Claude Code. pi: tools register and run through a fixed bridge, but no model call was made. Not tested with opencode. |
 | UI as a separate React service | Done: `ui/`, with its own tests, image, and CI job |
 | Conversation history in Postgres | Done: save, list, reopen, delete. History is not used as model context. |
 | Qdrant server and separate processes | Done (`docker-compose.yml`, `server.py rest\|grpc`) |
@@ -762,6 +765,7 @@ server/                      The server service (Python)
 mcp-server/                  The MCP service (Python, MCP SDK)
   server.py                  The five tools. Calls the REST API.
   tests/                     Tool tests and a protocol test over stdio
+  pi/docintel.ts             Example pi extension (needs an MCP bridge for pi)
 ui/                          The UI service (React and TypeScript)
   src/                       App, components, API client, tests
   Dockerfile                 Vite build, served by nginx
