@@ -100,7 +100,9 @@ async def ask_documents(
     Returns the answer, the cited pages ({doc, page}), and refused=true when the reports do not contain the answer.
     rejected_citations lists pages the answer model cited but that were not in the retrieved text; do not rely on them.
     The turn is saved in conversation history when the server has history turned on."""
-    r = await _call("POST", "/ask", json={"question": question, "doc": doc, "conversation_id": conversation_id})
+    # some clients send "" for an argument they leave out; the server would reject "" as an id
+    body = {"question": question, "doc": doc or None, "conversation_id": conversation_id or None}
+    r = await _call("POST", "/ask", json=body)
     d = r.json()
     return {
         "answer": d["answer"],

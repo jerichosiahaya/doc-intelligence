@@ -52,6 +52,12 @@ def test_ask_sends_the_question_and_keeps_only_the_useful_fields(api):
     assert json.loads(req.content) == {"question": "What was net profit?", "doc": "report", "conversation_id": "c0"}
 
 
+def test_empty_strings_mean_not_given(api):
+    api.respond(lambda r: httpx.Response(200, json=ASK))
+    run(server.ask_documents("q?", doc="", conversation_id=""))
+    assert json.loads(api[0].content) == {"question": "q?", "doc": None, "conversation_id": None}
+
+
 def test_api_key_header_only_when_set(api, monkeypatch):
     run(server.list_documents())
     assert "x-api-key" not in api[0].headers
