@@ -7,19 +7,32 @@
 <style>
   :root {
     --bg: #f7f8f8; --fg: #14282e; --muted: #5d6f75; --card: #fff; --line: #dde3e5;
-    --accent: #0f6f6e; --accent-fg: #fff; --warn-bg: #fdf1e3; --warn-fg: #8a4b08;
+    --accent: #0f6f6e; --accent-fg: #fff; --warn-bg: #fdf1e3; --warn-fg: #8a4b08; --user: #e6f1f1;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #101a1d; --fg: #e4ecee; --muted: #93a6ac; --card: #17242a; --line: #28383f;
-      --accent: #3fb5b2; --accent-fg: #07201f; --warn-bg: #3a2a14; --warn-fg: #f1c48b;
+      --accent: #3fb5b2; --accent-fg: #07201f; --warn-bg: #3a2a14; --warn-fg: #f1c48b; --user: #1d3036;
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, sans-serif; }
-  main { max-width: 44rem; margin: 0 auto; padding: 2rem 16px 4rem; }
+  .layout { max-width: 64rem; margin: 0 auto; padding: 2rem 16px 2rem; display: grid; gap: 1.5rem; }
+  .layout.has-history { grid-template-columns: 16rem minmax(0, 1fr); }
+  @media (max-width: 760px) { .layout.has-history { grid-template-columns: minmax(0, 1fr); } }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  p.sub { margin: 0 0 1.5rem; color: var(--muted); }
+  p.sub { margin: 0 0 1.25rem; color: var(--muted); }
+  aside { display: none; }
+  .has-history aside { display: block; }
+  aside h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 1rem 0 .4rem; }
+  #list { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto; }
+  #list li { display: flex; align-items: center; gap: .25rem; border-radius: 8px; }
+  #list li[aria-current="true"] { background: var(--user); }
+  #list button.open { flex: 1; min-width: 0; text-align: left; font-weight: 500; color: var(--fg); background: transparent;
+                      padding: .45rem .6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #list button.del { font-size: .8rem; font-weight: 500; color: var(--muted); background: transparent; padding: .3rem .5rem; }
+  #list button.del.sure { color: var(--warn-fg); background: var(--warn-bg); }
+  .empty { color: var(--muted); font-size: .9rem; }
   form { display: flex; flex-wrap: wrap; gap: .5rem; }
   input, select { padding: .7rem .8rem; font: inherit; color: var(--fg);
           background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
@@ -29,7 +42,9 @@
   button { padding: .7rem 1.1rem; font: inherit; font-weight: 600; cursor: pointer; border: 0;
            border-radius: 8px; background: var(--accent); color: var(--accent-fg); }
   button:disabled { opacity: .6; cursor: progress; }
-  #out { margin-top: 1.5rem; }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); width: 100%; }
+  #thread { display: grid; gap: .9rem; margin-bottom: 1.25rem; }
+  .q { justify-self: end; max-width: 85%; background: var(--user); border-radius: 12px; padding: .6rem .9rem; white-space: pre-wrap; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
   .answer { white-space: pre-wrap; margin: 0 0 .8rem; }
   .badge { display: inline-block; font-size: .8rem; font-weight: 600; padding: .1rem .5rem;
@@ -45,23 +60,33 @@
 </style>
 </head>
 <body>
-<main>
-  <h1>Document Intelligence</h1>
-  <p class="sub">Ask a question about the reports. Answers cite their pages and decline when the reports don't say.</p>
-  <form id="keybar">
-    <input id="key" type="password" placeholder="API key" aria-label="API key" autocomplete="off">
-    <button>Save</button>
-  </form>
-  <form id="f">
-    <input id="q" name="q" placeholder="e.g. What was net profit in 2024?" maxlength="2000" required autofocus aria-label="Question">
-    <select id="doc" aria-label="Document"><option value="">All documents</option></select>
-    <button id="go">Ask</button>
-  </form>
-  <div id="out" aria-live="polite"></div>
-</main>
+<div class="layout" id="layout">
+  <aside>
+    <button id="new" class="ghost" type="button">New chat</button>
+    <h2>History</h2>
+    <ul id="list"></ul>
+    <p id="noHist" class="empty" hidden>No saved conversations yet.</p>
+  </aside>
+  <main>
+    <h1>Document Intelligence</h1>
+    <p class="sub">Ask a question about the reports. Answers cite their pages and decline when the reports don't say.</p>
+    <form id="keybar">
+      <input id="key" type="password" placeholder="API key" aria-label="API key" autocomplete="off">
+      <button>Save</button>
+    </form>
+    <div id="thread" aria-live="polite"></div>
+    <form id="f">
+      <input id="q" name="q" placeholder="e.g. What was net profit in 2024?" maxlength="2000" required autofocus aria-label="Question">
+      <select id="doc" aria-label="Document"><option value="">All documents</option></select>
+      <button id="go">Ask</button>
+    </form>
+  </main>
+</div>
 <script>
 const $ = (id) => document.getElementById(id);
-const f = $("f"), q = $("q"), go = $("go"), out = $("out"), docSel = $("doc"), keybar = $("keybar");
+const f = $("f"), q = $("q"), go = $("go"), thread = $("thread"), docSel = $("doc"), keybar = $("keybar"),
+      list = $("list"), noHist = $("noHist"), layout = $("layout");
+let historyOn = false, conversationId = null;
 
 function store(k, v) { try { sessionStorage.setItem(k, v); } catch {} }
 function key() { try { return sessionStorage.getItem("apiKey") || ""; } catch { return ""; } }
@@ -80,7 +105,7 @@ async function api(path, opts) {
   return r;
 }
 
-keybar.addEventListener("submit", (e) => { e.preventDefault(); store("apiKey", $("key").value); keybar.style.display = "none"; loadDocs(); });
+keybar.addEventListener("submit", (e) => { e.preventDefault(); store("apiKey", $("key").value); keybar.style.display = "none"; init(); });
 
 async function loadDocs() {
   try {
@@ -88,6 +113,45 @@ async function loadDocs() {
     docSel.replaceChildren(new Option("All documents", ""), ...names.map((n) => new Option(n, n)));
   } catch {}
 }
+
+async function loadHistory() {
+  if (!historyOn) return;
+  try {
+    const r = await api("/conversations");
+    const rows = await r.json();
+    list.replaceChildren(...rows.map(row => {
+      const li = el("li");
+      li.setAttribute("aria-current", String(row.id === conversationId));
+      const open = el("button", "open", row.title);
+      open.type = "button";
+      open.title = row.title;
+      open.addEventListener("click", () => openConversation(row.id));
+      const del = el("button", "del", "Delete");
+      del.type = "button";
+      del.addEventListener("click", () => {
+        if (!del.classList.contains("sure")) { del.classList.add("sure"); del.textContent = "Sure?"; return; }
+        removeConversation(row.id);
+      });
+      li.append(open, del);
+      return li;
+    }));
+    noHist.hidden = rows.length > 0;
+  } catch {}
+}
+
+async function removeConversation(id) {
+  await api(`/conversations/${id}`, { method: "DELETE" });
+  if (id === conversationId) newChat();
+  loadHistory();
+}
+
+function newChat() {
+  conversationId = null;
+  thread.replaceChildren();
+  q.focus();
+  loadHistory();
+}
+$("new").addEventListener("click", newChat);
 
 async function showPage(box, btn, s) {
   const open = btn.getAttribute("aria-pressed") === "true";
@@ -105,42 +169,72 @@ async function showPage(box, btn, s) {
   } catch (e) { box.append(el("p", "meta", "Could not load the page: " + e.message)); }
 }
 
+// d: { answer, citations, rejected_citations, refused, retrieved, seconds, tokens }
+function answerCard(d) {
+  const card = el("div", "card");
+  if (d.refused) card.append(el("div", "badge", "Not in the document"));
+  card.append(el("p", "answer", d.answer));
+  const box = el("div", "page");
+  (d.citations || []).forEach((s) => {
+    const b = el("button", "chip", `${s.doc} p.${s.page}`);
+    b.type = "button";
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", () => showPage(box, b, s));
+    card.append(b);
+  });
+  card.append(box);
+  if ((d.rejected_citations || []).length)
+    card.append(el("p", "meta", "Removed unverified citations: " + d.rejected_citations.map((s) => `${s.doc} p.${s.page}`).join(", ")));
+  card.append(el("p", "meta", `Retrieved ${(d.retrieved || []).length} pages · ${d.seconds}s · ${d.tokens} tokens`));
+  return card;
+}
+
+async function openConversation(id) {
+  try {
+    const r = await api(`/conversations/${id}`);
+    if (!r.ok) throw new Error("conversation not found");
+    const conv = await r.json();
+    conversationId = conv.id;
+    thread.replaceChildren(...conv.messages.map((m) =>
+      m.role === "user" ? el("div", "q", m.content) : answerCard({ ...m, answer: m.content })));
+    loadHistory();
+  } catch (e) { thread.replaceChildren(el("div", "card err", "Could not open the conversation: " + e.message)); }
+}
+
 f.addEventListener("submit", async (ev) => {
   ev.preventDefault();
+  const question = q.value;
   go.disabled = true;
-  out.replaceChildren(el("p", "meta", "Thinking…"));
+  thread.append(el("div", "q", question));
+  const pending = el("p", "meta", "Thinking…");
+  thread.append(pending);
+  q.value = "";
   try {
     const r = await api("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q.value, doc: docSel.value || null }),
+      body: JSON.stringify({ question, doc: docSel.value || null, conversation_id: conversationId }),
     });
     const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || r.statusText);
-    const card = el("div", "card");
-    if (d.refused) card.append(el("div", "badge", "Not in the document"));
-    card.append(el("p", "answer", d.answer));
-    const box = el("div", "page");
-    d.citations.forEach((s) => {
-      const b = el("button", "chip", `${s.doc} p.${s.page}`);
-      b.type = "button";
-      b.setAttribute("aria-pressed", "false");
-      b.addEventListener("click", () => showPage(box, b, s));
-      card.append(b);
-    });
-    card.append(box);
-    if (d.rejected_citations.length)
-      card.append(el("p", "meta", "Removed unverified citations: " + d.rejected_citations.map((s) => `${s.doc} p.${s.page}`).join(", ")));
-    card.append(el("p", "meta", `Retrieved ${d.retrieved.length} pages · ${d.seconds}s · ${d.tokens} tokens`));
-    out.replaceChildren(card);
+    if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : r.statusText);
+    pending.replaceWith(answerCard(d));
+    if (d.conversation_id) { conversationId = d.conversation_id; loadHistory(); }
   } catch (e) {
-    out.replaceChildren(el("div", "card err", "Request failed: " + e.message));
+    pending.replaceWith(el("div", "card err", "Request failed: " + e.message));
+    q.value = question;
   } finally {
     go.disabled = false;
+    q.focus();
   }
 });
 
-loadDocs();
+async function init() {
+  try { historyOn = !!(await (await fetch("/health")).json()).history; } catch {}
+  layout.classList.toggle("has-history", historyOn);
+  loadDocs();
+  loadHistory();
+}
+init();
 </script>
 </body>
 </html>

@@ -5,6 +5,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: docintel
+          POSTGRES_PASSWORD: docintel
+          POSTGRES_DB: docintel
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U docintel" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://docintel:docintel@localhost:5432/docintel
     strategy:
       matrix:
         python: ["3.12", "3.14"]

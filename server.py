@@ -7,6 +7,7 @@ process, so run separate processes only with QDRANT_URL set (see docker-compose.
 import os
 import secrets
 import sys
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +19,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+import history
 import docintel_pb2 as pb
 import docintel_pb2_grpc as pb_grpc
 from ask import answer
@@ -54,6 +56,10 @@ class UnknownDoc(Exception):
     pass
 
 
+class HistoryOff(Exception):
+    pass
+
+
 class Source(BaseModel):
     doc: str
     page: int
@@ -62,6 +68,7 @@ class Source(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     doc: str | None = None
+    conversation_id: uuid.UUID | None = None  # continue a saved conversation; omit to start a new one
 
 
 class AskReply(BaseModel):
@@ -72,17 +79,22 @@ class AskReply(BaseModel):
     retrieved: list[Source]
     seconds: float
     tokens: int
+    conversation_id: str | None = None  # set when history is on and the turn was saved
 
 
 def doc_names():
     return sorted(p.stem for p in DOCS.glob("*.pdf"))
 
 
-def ask(question: str, doc: str | None = None, via: str = "rest") -> AskReply:
+def ask(question: str, doc: str | None = None, via: str = "rest", conversation_id: uuid.UUID | None = None) -> AskReply:
     if doc and doc not in doc_names():
         raise UnknownDoc(doc)
+    if conversation_id and not history.enabled():
+        raise HistoryOff()
+    if conversation_id and not history.exists(conversation_id):  # check before the model call, not after
+        raise history.UnknownConversation(str(conversation_id))
     a = answer(question, doc, via=via)
-    return AskReply(
+    reply = AskReply(
         answer=str(a["answer"]),
         citations=a["citations"],
         rejected_citations=a["rejected_citations"],
@@ -90,7 +102,14 @@ def ask(question: str, doc: str | None = None, via: str = "rest") -> AskReply:
         retrieved=a["retrieved_sources"],
         seconds=a["seconds"],
         tokens=a["tokens"] or 0,
+        conversation_id=str(conversation_id) if conversation_id else None,
     )
+    if history.enabled():
+        try:  # a failed save must not lose an answer that already cost a model call
+            reply.conversation_id = str(history.save_turn(question, reply.model_dump(), doc, conversation_id))
+        except Exception as e:
+            log(kind="history", via=via, status="error", error=str(e)[:300])
+    return reply
 
 
 class DocIntel(pb_grpc.DocIntelServicer):
@@ -98,12 +117,20 @@ class DocIntel(pb_grpc.DocIntelServicer):
         if not request.question.strip():
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "question is empty")
         try:
-            r = ask(request.question, request.doc or None, via="grpc")
+            cid = history.parse_id(request.conversation_id) if request.conversation_id else None
+        except ValueError:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "conversation_id is not a UUID")
+        try:
+            r = ask(request.question, request.doc or None, via="grpc", conversation_id=cid)
         except UnknownDoc:
             context.abort(grpc.StatusCode.NOT_FOUND, f"unknown document: {request.doc}")
+        except history.UnknownConversation:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"unknown conversation: {request.conversation_id}")
+        except HistoryOff:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "history is not enabled (set DATABASE_URL)")
         except Exception as e:  # LLM proxy or vector store failure
             context.abort(grpc.StatusCode.UNAVAILABLE, f"backend error: {e}")
-        return pb.AskReply(**r.model_dump())
+        return pb.AskReply(**{**r.model_dump(), "conversation_id": r.conversation_id or ""})
 
 
 MODE = "both"
@@ -118,6 +145,8 @@ def grpc_server():
 
 @asynccontextmanager
 async def lifespan(_):
+    if history.enabled():
+        history.init()  # fail at startup, not on the first request, if the database is wrong
     g = grpc_server() if MODE == "both" else None
     if g:
         g.start()
@@ -131,7 +160,7 @@ app = FastAPI(title="Document Intelligence", lifespan=lifespan)
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "history": history.enabled()}
 
 
 @app.get("/documents", dependencies=[Depends(require_key)])
@@ -142,11 +171,39 @@ def documents():
 @app.post("/ask", response_model=AskReply, dependencies=[Depends(require_key)])
 def post_ask(req: AskRequest):
     try:
-        return ask(req.question, req.doc)
+        return ask(req.question, req.doc, conversation_id=req.conversation_id)
     except UnknownDoc:
         raise HTTPException(404, f"unknown document: {req.doc}")
+    except history.UnknownConversation:
+        raise HTTPException(404, f"unknown conversation: {req.conversation_id}")
+    except HistoryOff:
+        raise HTTPException(400, "history is not enabled (set DATABASE_URL)")
     except Exception as e:
         raise HTTPException(502, f"backend error: {e}")
+
+
+def need_history():
+    if not history.enabled():
+        raise HTTPException(404, "history is not enabled (set DATABASE_URL)")
+
+
+@app.get("/conversations", dependencies=[Depends(require_key), Depends(need_history)])
+def conversations():
+    return history.list_conversations()
+
+
+@app.get("/conversations/{conversation_id}", dependencies=[Depends(require_key), Depends(need_history)])
+def conversation(conversation_id: uuid.UUID):
+    conv = history.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(404, f"unknown conversation: {conversation_id}")
+    return conv
+
+
+@app.delete("/conversations/{conversation_id}", status_code=204, dependencies=[Depends(require_key), Depends(need_history)])
+def delete_conversation(conversation_id: uuid.UUID):
+    if not history.delete_conversation(conversation_id):
+        raise HTTPException(404, f"unknown conversation: {conversation_id}")
 
 
 @app.get("/page/{doc}/{page}.png", dependencies=[Depends(require_key)])

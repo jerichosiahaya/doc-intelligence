@@ -8,7 +8,8 @@ service DocIntel {
 
 message AskRequest {
   string question = 1;
-  string doc = 2;  // optional: limit the search to one ingested document
+  string doc = 2;              // optional: limit the search to one ingested document
+  string conversation_id = 3;  // optional: continue a saved conversation (needs DATABASE_URL)
 }
 
 message Source {
@@ -24,4 +25,5 @@ message AskReply {
   double seconds = 5;
   int64 tokens = 6;
   repeated Source rejected_citations = 7;  // cited pages that were not retrieved
+  string conversation_id = 8;              // set when history is on and the turn was saved
 }

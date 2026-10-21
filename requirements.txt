@@ -9,3 +9,4 @@ uvicorn
 grpcio
 grpcio-tools
 protobuf
+psycopg[binary]
