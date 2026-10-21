@@ -1,4 +1,4 @@
-"""Usage: python eval.py [--retrieval-only]   (reads eval.yaml, writes results.json)
+"""Usage: python eval.py [--retrieval-only] [--doc NAME]   (reads eval.yaml, writes results.json)
 
 Retrieval (did every supporting page come back?) and answer quality (judge model)
 are scored separately. Unanswerable questions pass only if the system refuses.
@@ -15,6 +15,7 @@ import yaml
 from ask import answer, retrieve
 
 RETRIEVAL_ONLY = "--retrieval-only" in sys.argv
+DOC = sys.argv[sys.argv.index("--doc") + 1] if "--doc" in sys.argv else None  # limit to one ingested document
 
 JUDGE = """Compare the candidate answer with the expected answer. The candidate is correct if it
 states the same key facts (wording and extra detail do not matter). Reply JSON: {"correct": bool, "why": str}"""
@@ -51,11 +52,11 @@ def run(item):
     refuse = item["expected"] == "REFUSE"
     row = dict(id=item["id"], type=item["type"], q=item["q"], expected=item["expected"])
     if RETRIEVAL_ONLY:
-        chunks = retrieve(item["q"])
+        chunks = retrieve(item["q"], doc=DOC)
         row.update(retrieved_pages=sorted({p for c in chunks for p in c["pages"]}), retrieval_hit=hit(item, chunks),
                    answer_ok=None)
         return row
-    a = answer(item["q"])
+    a = answer(item["q"], DOC)
     row.update(got=a["answer"], retrieved_pages=a["retrieved_pages"], seconds=a["seconds"], tokens=a["tokens"],
                retrieval_hit=hit(item, a["retrieved"]))
     if refuse:

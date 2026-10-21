@@ -20,10 +20,12 @@
   main { max-width: 44rem; margin: 0 auto; padding: 2rem 16px 4rem; }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
   p.sub { margin: 0 0 1.5rem; color: var(--muted); }
-  form { display: flex; gap: .5rem; }
-  input { flex: 1; min-width: 0; padding: .7rem .8rem; font: inherit; color: var(--fg);
+  form { display: flex; flex-wrap: wrap; gap: .5rem; }
+  input, select { padding: .7rem .8rem; font: inherit; color: var(--fg);
           background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
-  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #q { flex: 1 1 14rem; min-width: 0; }
+  #doc { flex: 0 1 12rem; min-width: 0; }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   button { padding: .7rem 1.1rem; font: inherit; font-weight: 600; cursor: pointer; border: 0;
            border-radius: 8px; background: var(--accent); color: var(--accent-fg); }
   button:disabled { opacity: .6; cursor: progress; }
@@ -32,25 +34,38 @@
   .answer { white-space: pre-wrap; margin: 0 0 .8rem; }
   .badge { display: inline-block; font-size: .8rem; font-weight: 600; padding: .1rem .5rem;
            border-radius: 99px; background: var(--warn-bg); color: var(--warn-fg); margin-bottom: .6rem; }
-  .chip { display: inline-block; font-size: .85rem; padding: .05rem .55rem; margin: 0 .3rem .3rem 0;
-          border: 1px solid var(--line); border-radius: 99px; }
+  button.chip { display: inline-block; font-size: .85rem; font-weight: 500; padding: .1rem .6rem; margin: 0 .3rem .3rem 0;
+          color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 99px; }
+  button.chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
   .meta { color: var(--muted); font-size: .85rem; margin: .4rem 0 0; }
   .err { color: var(--warn-fg); background: var(--warn-bg); }
+  .page { margin-top: 1rem; }
+  .page img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  #keybar { display: none; margin-bottom: 1rem; }
 </style>
 </head>
 <body>
 <main>
   <h1>Document Intelligence</h1>
-  <p class="sub">Ask a question about the report. Answers cite their pages and decline when the report doesn't say.</p>
+  <p class="sub">Ask a question about the reports. Answers cite their pages and decline when the reports don't say.</p>
+  <form id="keybar">
+    <input id="key" type="password" placeholder="API key" aria-label="API key" autocomplete="off">
+    <button>Save</button>
+  </form>
   <form id="f">
     <input id="q" name="q" placeholder="e.g. What was net profit in 2024?" maxlength="2000" required autofocus aria-label="Question">
+    <select id="doc" aria-label="Document"><option value="">All documents</option></select>
     <button id="go">Ask</button>
   </form>
   <div id="out" aria-live="polite"></div>
 </main>
 <script>
-const f = document.getElementById("f"), q = document.getElementById("q"),
-      go = document.getElementById("go"), out = document.getElementById("out");
+const $ = (id) => document.getElementById(id);
+const f = $("f"), q = $("q"), go = $("go"), out = $("out"), docSel = $("doc"), keybar = $("keybar");
+
+function store(k, v) { try { sessionStorage.setItem(k, v); } catch {} }
+function key() { try { return sessionStorage.getItem("apiKey") || ""; } catch { return ""; } }
+function headers(extra) { return key() ? { ...extra, "X-API-Key": key() } : extra; }
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -59,24 +74,64 @@ function el(tag, cls, text) {
   return e;
 }
 
+async function api(path, opts) {
+  const r = await fetch(path, { ...opts, headers: headers((opts && opts.headers) || {}) });
+  if (r.status === 401) { keybar.style.display = "flex"; throw new Error("API key required"); }
+  return r;
+}
+
+keybar.addEventListener("submit", (e) => { e.preventDefault(); store("apiKey", $("key").value); keybar.style.display = "none"; loadDocs(); });
+
+async function loadDocs() {
+  try {
+    const names = await (await api("/documents")).json();
+    docSel.replaceChildren(new Option("All documents", ""), ...names.map((n) => new Option(n, n)));
+  } catch {}
+}
+
+async function showPage(box, btn, s) {
+  const open = btn.getAttribute("aria-pressed") === "true";
+  box.replaceChildren();
+  box.parentNode.querySelectorAll("button.chip").forEach((b) => b.setAttribute("aria-pressed", "false"));
+  if (open) return;
+  btn.setAttribute("aria-pressed", "true");
+  try {
+    const r = await api(`/page/${encodeURIComponent(s.doc)}/${s.page}.png`);
+    if (!r.ok) throw new Error("page not available");
+    const img = el("img");
+    img.alt = `${s.doc}, page ${s.page}`;
+    img.src = URL.createObjectURL(await r.blob());
+    box.append(img);
+  } catch (e) { box.append(el("p", "meta", "Could not load the page: " + e.message)); }
+}
+
 f.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   go.disabled = true;
   out.replaceChildren(el("p", "meta", "Thinking…"));
   try {
-    const r = await fetch("/ask", {
+    const r = await api("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q.value }),
+      body: JSON.stringify({ question: q.value, doc: docSel.value || null }),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
     const card = el("div", "card");
     if (d.refused) card.append(el("div", "badge", "Not in the document"));
     card.append(el("p", "answer", d.answer));
-    d.citations.forEach((p) => card.append(el("span", "chip", "p." + p)));
-    card.append(el("p", "meta",
-      `Retrieved pages ${d.retrieved_pages.join(", ")} · ${d.seconds}s · ${d.tokens} tokens`));
+    const box = el("div", "page");
+    d.citations.forEach((s) => {
+      const b = el("button", "chip", `${s.doc} p.${s.page}`);
+      b.type = "button";
+      b.setAttribute("aria-pressed", "false");
+      b.addEventListener("click", () => showPage(box, b, s));
+      card.append(b);
+    });
+    card.append(box);
+    if (d.rejected_citations.length)
+      card.append(el("p", "meta", "Removed unverified citations: " + d.rejected_citations.map((s) => `${s.doc} p.${s.page}`).join(", ")));
+    card.append(el("p", "meta", `Retrieved ${d.retrieved.length} pages · ${d.seconds}s · ${d.tokens} tokens`));
     out.replaceChildren(card);
   } catch (e) {
     out.replaceChildren(el("div", "card err", "Request failed: " + e.message));
@@ -84,6 +139,8 @@ f.addEventListener("submit", async (ev) => {
     go.disabled = false;
   }
 });
+
+loadDocs();
 </script>
 </body>
 </html>

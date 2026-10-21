@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import uuid
 from pathlib import Path
@@ -76,6 +77,9 @@ def prose_chunks(text):
 def main(pdf, use_vision=True):
     doc = fitz.open(pdf)
     name = Path(pdf).stem
+    Path("docs").mkdir(exist_ok=True)
+    if Path(pdf).resolve() != Path("docs", f"{name}.pdf").resolve():
+        shutil.copy(pdf, Path("docs", f"{name}.pdf"))  # the UI renders cited pages from this copy
     chunks, prev = [], None  # prev = last table chunk, for merging across pages
     for pno, page in enumerate(doc, 1):
         text = page.get_text()

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x64ocintel.proto\x12\x08\x64ocintel\"\x1e\n\nAskRequest\x12\x10\n\x08question\x18\x01 \x01(\t\"x\n\x08\x41skReply\x12\x0e\n\x06\x61nswer\x18\x01 \x01(\t\x12\x11\n\tcitations\x18\x02 \x03(\x05\x12\x0f\n\x07refused\x18\x03 \x01(\x08\x12\x17\n\x0fretrieved_pages\x18\x04 \x03(\x05\x12\x0f\n\x07seconds\x18\x05 \x01(\x01\x12\x0e\n\x06tokens\x18\x06 \x01(\x03\x32;\n\x08\x44ocIntel\x12/\n\x03\x41sk\x12\x14.docintel.AskRequest\x1a\x12.docintel.AskReplyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x64ocintel.proto\x12\x08\x64ocintel\"+\n\nAskRequest\x12\x10\n\x08question\x18\x01 \x01(\t\x12\x0b\n\x03\x64oc\x18\x02 \x01(\t\"#\n\x06Source\x12\x0b\n\x03\x64oc\x18\x01 \x01(\t\x12\x0c\n\x04page\x18\x02 \x01(\x05\"\xc4\x01\n\x08\x41skReply\x12\x0e\n\x06\x61nswer\x18\x01 \x01(\t\x12#\n\tcitations\x18\x02 \x03(\x0b\x32\x10.docintel.Source\x12\x0f\n\x07refused\x18\x03 \x01(\x08\x12#\n\tretrieved\x18\x04 \x03(\x0b\x32\x10.docintel.Source\x12\x0f\n\x07seconds\x18\x05 \x01(\x01\x12\x0e\n\x06tokens\x18\x06 \x01(\x03\x12,\n\x12rejected_citations\x18\x07 \x03(\x0b\x32\x10.docintel.Source2;\n\x08\x44ocIntel\x12/\n\x03\x41sk\x12\x14.docintel.AskRequest\x1a\x12.docintel.AskReplyb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,9 +32,11 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'docintel_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_ASKREQUEST']._serialized_start=28
-  _globals['_ASKREQUEST']._serialized_end=58
-  _globals['_ASKREPLY']._serialized_start=60
-  _globals['_ASKREPLY']._serialized_end=180
-  _globals['_DOCINTEL']._serialized_start=182
-  _globals['_DOCINTEL']._serialized_end=241
+  _globals['_ASKREQUEST']._serialized_end=71
+  _globals['_SOURCE']._serialized_start=73
+  _globals['_SOURCE']._serialized_end=108
+  _globals['_ASKREPLY']._serialized_start=111
+  _globals['_ASKREPLY']._serialized_end=307
+  _globals['_DOCINTEL']._serialized_start=309
+  _globals['_DOCINTEL']._serialized_end=368
 # @@protoc_insertion_point(module_scope)

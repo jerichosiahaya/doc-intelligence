@@ -8,13 +8,20 @@ service DocIntel {
 
 message AskRequest {
   string question = 1;
+  string doc = 2;  // optional: limit the search to one ingested document
+}
+
+message Source {
+  string doc = 1;
+  int32 page = 2;
 }
 
 message AskReply {
   string answer = 1;
-  repeated int32 citations = 2;
+  repeated Source citations = 2;           // cited pages that were retrieved
   bool refused = 3;
-  repeated int32 retrieved_pages = 4;
+  repeated Source retrieved = 4;           // every page sent to the model
   double seconds = 5;
   int64 tokens = 6;
+  repeated Source rejected_citations = 7;  // cited pages that were not retrieved
 }
