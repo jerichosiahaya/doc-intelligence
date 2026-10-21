@@ -10,11 +10,13 @@ import os
 import re
 import shutil
 import sys
+import time
 import uuid
 from pathlib import Path
 
 import pymupdf as fitz
 
+from reqlog import log
 from checks import check_totals, missing_numbers
 from rag import COLLECTION, embed, llm, models, qdrant, sparse
 
@@ -35,6 +37,7 @@ def vision(png: bytes) -> str:
     if f.exists():
         return f.read_text()
     img = "data:image/png;base64," + base64.b64encode(png).decode()
+    t0 = time.time()
     r = llm().chat.completions.create(
         model=model,
         temperature=0,
@@ -44,6 +47,9 @@ def vision(png: bytes) -> str:
         ]}],
     )
     out = r.choices[0].message.content
+    u = r.usage
+    log(kind="vision", via="ingest", status="ok", model=model, seconds=round(time.time() - t0, 2),
+        prompt_tokens=u.prompt_tokens if u else None, completion_tokens=u.completion_tokens if u else None)
     CACHE.mkdir(parents=True, exist_ok=True)
     f.write_text(out)
     return out

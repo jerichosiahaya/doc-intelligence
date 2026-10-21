@@ -5,6 +5,7 @@ import re
 import sys
 import time
 
+from reqlog import log
 from rag import COLLECTION, embed, llm, models, qdrant, rerank_scores, sparse
 
 K = int(os.environ.get("TOP_K", 6))
@@ -78,18 +79,23 @@ def label(c):
     return f"{c['doc']} p.{a}" if a == b else f"{c['doc']} p.{a}-{b}"
 
 
-def answer(question, doc=None):
+def answer(question, doc=None, via="cli"):
     t0 = time.time()
-    ctx = retrieve(question, doc=doc)
-    context = "\n\n".join(f"[{label(c)}] ({c['type']}) {c['caption']}\n{c['text']}" for c in ctx)
-    r = llm().chat.completions.create(
-        model=os.environ["ANSWER_MODEL"],
-        temperature=0,
-        messages=[
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Excerpts:\n{context}\n\nQuestion: {question}"},
-        ],
-    )
+    fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=os.environ.get("ANSWER_MODEL"))
+    try:
+        ctx = retrieve(question, doc=doc)
+        context = "\n\n".join(f"[{label(c)}] ({c['type']}) {c['caption']}\n{c['text']}" for c in ctx)
+        r = llm().chat.completions.create(
+            model=os.environ["ANSWER_MODEL"],
+            temperature=0,
+            messages=[
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": f"Excerpts:\n{context}\n\nQuestion: {question}"},
+            ],
+        )
+    except Exception as e:
+        log(**fields, status="error", error=str(e)[:300], seconds=round(time.time() - t0, 2))
+        raise
     raw = r.choices[0].message.content
     try:
         out = json.loads(re.search(r"\{.*\}", raw, re.S).group())
@@ -104,6 +110,9 @@ def answer(question, doc=None):
     out["tokens"] = u.total_tokens if u else None
     out["prompt_tokens"] = u.prompt_tokens if u else None
     out["completion_tokens"] = u.completion_tokens if u else None
+    log(**fields, status="ok", seconds=out["seconds"], tokens=out["tokens"], prompt_tokens=out["prompt_tokens"],
+        completion_tokens=out["completion_tokens"], refused=bool(out.get("refused")),
+        citations=len(out["citations"]), rejected=len(out["rejected_citations"]), retrieved=len(ctx))
     return out
 
 

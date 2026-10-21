@@ -56,7 +56,7 @@ def run(item):
         row.update(retrieved_pages=sorted({p for c in chunks for p in c["pages"]}), retrieval_hit=hit(item, chunks),
                    answer_ok=None)
         return row
-    a = answer(item["q"], DOC)
+    a = answer(item["q"], DOC, via="eval")
     row.update(got=a["answer"], retrieved_pages=a["retrieved_pages"], seconds=a["seconds"], tokens=a["tokens"],
                retrieval_hit=hit(item, a["retrieved"]))
     if refuse:
