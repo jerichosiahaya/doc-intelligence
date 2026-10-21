@@ -5,7 +5,7 @@ import re
 import sys
 import time
 
-from rag import embed, llm, qdrant, COLLECTION
+from rag import COLLECTION, embed, llm, models, qdrant, sparse
 
 K = int(os.environ.get("TOP_K", 6))
 
@@ -18,7 +18,21 @@ Reply with JSON only: {"answer": str, "citations": [page ints], "refused": bool}
 
 
 def retrieve(question, k=K):
-    hits = qdrant().query_points(COLLECTION, query=embed([question])[0], limit=k).points
+    """SEARCH=dense (default) or hybrid (dense + BM25, fused with RRF)."""
+    dense = embed([question])[0]
+    if os.environ.get("SEARCH", "dense") == "hybrid":
+        n = max(3 * k, 20)  # each side contributes n candidates before fusion
+        hits = qdrant().query_points(
+            COLLECTION,
+            prefetch=[
+                models.Prefetch(query=dense, using="dense", limit=n),
+                models.Prefetch(query=sparse([question], query=True)[0], using="bm25", limit=n),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=k,
+        ).points
+    else:
+        hits = qdrant().query_points(COLLECTION, query=dense, using="dense", limit=k).points
     return [h.payload | {"score": h.score} for h in hits]
 
 

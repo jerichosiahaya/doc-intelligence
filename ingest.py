@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-from rag import COLLECTION, embed, llm, models, qdrant
+from rag import COLLECTION, embed, llm, models, qdrant, sparse
 
 VISION_PROMPT = (
     "Transcribe this report page. Output all text and numbers exactly as shown. "
@@ -109,8 +109,8 @@ def main(pdf, use_vision=True):
     q.delete(COLLECTION, models.FilterSelector(filter=models.Filter(must=[
         models.FieldCondition(key="doc", match=models.MatchValue(value=name))])))
     q.upsert(COLLECTION, [
-        models.PointStruct(id=str(uuid.uuid4()), vector=v, payload=c)
-        for c, v in zip(chunks, embed(texts))
+        models.PointStruct(id=str(uuid.uuid4()), vector={"dense": d, "bm25": b}, payload=c)
+        for c, d, b in zip(chunks, embed(texts), sparse(texts))
     ])
     q.close()
     print(f"{name}: {len(chunks)} chunks from {len(doc)} pages -> chunks.jsonl, qdrant_data/")

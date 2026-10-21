@@ -2,7 +2,7 @@
 import os
 
 from dotenv import load_dotenv
-from fastembed import TextEmbedding
+from fastembed import SparseTextEmbedding, TextEmbedding
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 
@@ -10,8 +10,10 @@ load_dotenv()
 
 COLLECTION = "chunks"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 384 dims, runs locally
+SPARSE_MODEL = "Qdrant/bm25"  # keyword side of hybrid search, runs locally
 
 _embedder = None
+_sparse = None
 _qdrant = None
 
 
@@ -25,6 +27,13 @@ def embed(texts):
     return [v.tolist() for v in _embedder.embed(texts)]
 
 
+def sparse(texts, query=False):
+    global _sparse
+    _sparse = _sparse or SparseTextEmbedding(SPARSE_MODEL)
+    fn = _sparse.query_embed if query else _sparse.embed
+    return [models.SparseVector(indices=v.indices.tolist(), values=v.values.tolist()) for v in fn(texts)]
+
+
 def qdrant():
     global _qdrant
     if _qdrant is None:
@@ -34,6 +43,7 @@ def qdrant():
         if not _qdrant.collection_exists(COLLECTION):
             _qdrant.create_collection(
                 COLLECTION,
-                vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
+                vectors_config={"dense": models.VectorParams(size=384, distance=models.Distance.COSINE)},
+                sparse_vectors_config={"bm25": models.SparseVectorParams(modifier=models.Modifier.IDF)},
             )
     return _qdrant
