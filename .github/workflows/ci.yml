@@ -32,3 +32,20 @@ jobs:
           cache-dependency-path: server/requirements*.txt
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: pytest -q   # model tests are skipped here; run them locally with RUN_MODEL_TESTS=1
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
