@@ -42,6 +42,7 @@ def answer(question):
     except (AttributeError, json.JSONDecodeError):
         out = {"answer": raw, "citations": [], "refused": False}
     out["retrieved_pages"] = sorted({c["page"] for c in ctx})
+    out["retrieved"] = ctx
     out["seconds"] = round(time.time() - t0, 2)
     out["tokens"] = r.usage.total_tokens if r.usage else None
     return out
