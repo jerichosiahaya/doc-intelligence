@@ -8,3 +8,5 @@ results.json
 warnings.json
 docs/
 logs/
+node_modules/
+dist/
