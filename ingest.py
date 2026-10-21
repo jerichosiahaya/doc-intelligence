@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
+from checks import check_totals, missing_numbers
 from rag import COLLECTION, embed, llm, models, qdrant, sparse
 
 VISION_PROMPT = (
@@ -96,9 +97,18 @@ def main(pdf, use_vision=True):
             v = vision(page.get_pixmap(dpi=170).tobytes("png"))
             chunks.append(dict(doc=name, page=pno, type="vision", source="vision",
                                caption=" / ".join(captions(v, "Figure")), text=v))
+    vis = {c["page"]: c["text"] for c in chunks if c["type"] == "vision"}
+    warnings = []
     for c in chunks:
         if c["type"] == "table":
-            c["text"] = md_table(c.pop("rows"))
+            rows = c.pop("rows")
+            c["text"] = md_table(rows)
+            where = f"p.{c['pages'][0]} {c['caption']}".strip()
+            warnings += [f"{where}: {m}" for m in check_totals(rows)]
+            if use_vision:  # cross-check the native table against the vision transcript
+                miss = missing_numbers(c["text"], " ".join(vis.get(p, "") for p in c["pages"]))
+                if miss:
+                    warnings.append(f"{where}: numbers not in the vision transcript: {', '.join(miss)}")
         c.setdefault("pages", [c["page"]])  # a merged table covers several pages
     with open("chunks.jsonl", "w") as f:
         for c in chunks:
@@ -113,6 +123,9 @@ def main(pdf, use_vision=True):
         for c, d, b in zip(chunks, embed(texts), sparse(texts))
     ])
     q.close()
+    json.dump(warnings, open("warnings.json", "w"), indent=2)
+    for w in warnings:
+        print("WARNING", w)
     print(f"{name}: {len(chunks)} chunks from {len(doc)} pages -> chunks.jsonl, qdrant_data/")
 
 

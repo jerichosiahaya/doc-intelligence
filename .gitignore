@@ -5,3 +5,4 @@ qdrant_data/
 .cache/
 chunks.jsonl
 results.json
+warnings.json

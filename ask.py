@@ -45,6 +45,16 @@ def retrieve(question, k=K):
     return out[:k]
 
 
+def verify_citations(cited, retrieved_pages):
+    """Split the model's citations into those that name a retrieved page and those that do not."""
+    pages = []
+    for c in cited or []:
+        m = re.search(r"\d+", str(c))
+        if m and int(m.group()) not in pages:
+            pages.append(int(m.group()))
+    return [p for p in pages if p in retrieved_pages], [p for p in pages if p not in retrieved_pages]
+
+
 def label(c):
     a, b = c["pages"][0], c["pages"][-1]
     return str(a) if a == b else f"{a}-{b}"
@@ -70,6 +80,7 @@ def answer(question):
     except (AttributeError, json.JSONDecodeError):
         out = {"answer": raw, "citations": [], "refused": False}
     out["retrieved_pages"] = sorted({p for c in ctx for p in c["pages"]})
+    out["citations"], out["rejected_citations"] = verify_citations(out.get("citations"), out["retrieved_pages"])
     out["retrieved"] = ctx
     out["seconds"] = round(time.time() - t0, 2)
     out["tokens"] = r.usage.total_tokens if r.usage else None
