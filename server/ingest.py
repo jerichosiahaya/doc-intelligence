@@ -136,7 +136,7 @@ def main(pdf, use_vision=True):
     json.dump(warnings, open("warnings.json", "w"), indent=2)
     for w in warnings:
         print("WARNING", w)
-    print(f"{name}: {len(chunks)} chunks from {len(doc)} pages -> chunks.jsonl, qdrant_data/")
+    print(f"{name}: {len(chunks)} chunks from {len(doc)} pages -> chunks.jsonl and the index")
 
 
 if __name__ == "__main__":

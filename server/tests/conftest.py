@@ -33,4 +33,5 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "log", lambda **f: None)
     monkeypatch.setattr(server, "answer", lambda q, doc=None, via="rest": REPLY)
     monkeypatch.setattr(server.history, "enabled", lambda: False)  # tests opt in to history explicitly
+    monkeypatch.setattr(server, "API_KEYS", [])  # a stray API_KEY in the environment must not change results
     return TestClient(server.app)  # no "with": the gRPC server in the lifespan stays off
