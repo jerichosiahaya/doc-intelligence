@@ -1,0 +1,19 @@
+server {
+  listen 80;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  # The browser calls /api on this host; nginx forwards it to the server service without the prefix.
+  location /api/ {
+    resolver ${NGINX_RESOLVER} valid=10s;   # resolve at request time, so nginx starts before the server
+    set $upstream ${API_UPSTREAM};
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass $upstream;
+    proxy_set_header Host $host;
+    proxy_read_timeout 180s;
+  }
+
+  location / {
+    try_files $uri /index.html;
+  }
+}

@@ -1,0 +1,12 @@
+.venv
+__pycache__
+.pytest_cache
+tests
+qdrant_data
+docs
+logs
+.cache
+chunks.jsonl
+warnings.json
+results.json
+.env
