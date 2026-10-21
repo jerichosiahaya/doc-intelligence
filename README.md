@@ -2,12 +2,13 @@
 
 This project answers questions about company reports. Each answer shows the pages it comes from. The system refuses to answer when the reports do not contain the answer.
 
-The project has two services:
+The project has three services:
 
 | Service | Folder | Technology | Role |
 |---|---|---|---|
 | Server | `server/` | Python, FastAPI, gRPC | Reads PDFs, searches, answers, keeps history |
 | UI | `ui/` | React, TypeScript, Vite | Web app. It talks to the server only through the REST API. |
+| MCP server | `mcp-server/` | Python, MCP SDK | Lets AI assistants (Claude, opencode, and others) use the server as tools. It talks to the server only through the REST API. |
 
 The sample document is the fictional "Kirana Logistics Group Annual Report 2025" (13 pages). The pipeline also works on other PDF files without code changes. You can ingest more than one document and ask questions across all of them.
 
@@ -29,15 +30,16 @@ The sample document is the fictional "Kirana Logistics Group Annual Report 2025"
 2. [How the system works](#how-the-system-works)
 3. [Interfaces](#interfaces)
 4. [Conversation history](#conversation-history)
-5. [Configuration](#configuration)
-6. [Logging and cost](#logging-and-cost)
-7. [Evaluation](#evaluation)
-8. [Tests and continuous integration](#tests-and-continuous-integration)
-9. [Key decisions and trade-offs](#key-decisions-and-trade-offs)
-10. [Known limitations](#known-limitations)
-11. [Roadmap status](#roadmap-status)
-12. [How AI tools were used](#how-ai-tools-were-used)
-13. [Repository files](#repository-files)
+5. [MCP server](#mcp-server)
+6. [Configuration](#configuration)
+7. [Logging and cost](#logging-and-cost)
+8. [Evaluation](#evaluation)
+9. [Tests and continuous integration](#tests-and-continuous-integration)
+10. [Key decisions and trade-offs](#key-decisions-and-trade-offs)
+11. [Known limitations](#known-limitations)
+12. [Roadmap status](#roadmap-status)
+13. [How AI tools were used](#how-ai-tools-were-used)
+14. [Repository files](#repository-files)
 
 ## Quick start
 
@@ -382,6 +384,110 @@ Deleting a conversation deletes its messages.
 
 > **Note:** The stored messages contain the text of questions and answers. Protect the database in the same way as the questions.
 
+## MCP server
+
+The folder `mcp-server/` holds an MCP (Model Context Protocol) server. It lets an AI assistant ask questions about your documents, and look at the cited pages, as tools.
+
+The MCP server does not read PDFs and does not use the index. Each tool calls the REST API of the server service. **The server service must be running.**
+
+### Tools
+
+| Tool | What it does | Changes data |
+|---|---|---|
+| `ask_documents(question, doc?, conversation_id?)` | Answers a question and returns the cited pages. `refused` is true when the documents do not contain the answer. | Saves the turn in history, if history is on |
+| `list_documents()` | Lists the document names | No |
+| `get_page_image(doc, page)` | Returns one page as a PNG image | No |
+| `list_conversations(limit?)` | Lists saved conversations, newest first. Needs history. | No |
+| `get_conversation(conversation_id)` | Returns one saved conversation. Needs history. | No |
+
+The server also gives the assistant these rules: say so when `refused` is true, and write every question in full, because the history is not used as context.
+
+When a call fails, the tool returns an error that says what to do. For example: "Cannot reach the Document Intelligence server at ... Is it running? Set DOCINTEL_URL." or "The server rejected the API key. Set DOCINTEL_API_KEY ...".
+
+### Install
+
+```bash
+cd mcp-server
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Then start the server service (see [Quick start](#quick-start)).
+
+### Settings
+
+The AI client passes these to the MCP server as environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DOCINTEL_URL` | `http://localhost:8000` | Base URL of the REST API. Through the UI container, use `http://localhost:8080/api`. |
+| `DOCINTEL_API_KEY` | | The server's `API_KEY`, if the server has one |
+| `DOCINTEL_TIMEOUT` | 180 | Seconds to wait for a reply. An answer calls a language model. |
+
+### Connect a client
+
+Use absolute paths in every client. The command is always the Python of the `mcp-server/.venv` folder, with `server.py` as its argument.
+
+**Claude Code**
+
+```bash
+claude mcp add docintel \
+  -e DOCINTEL_URL=http://localhost:8000 -e DOCINTEL_API_KEY=your-key \
+  -- /absolute/path/to/mcp-server/.venv/bin/python /absolute/path/to/mcp-server/server.py
+claude mcp list
+```
+
+The tools then have the names `mcp__docintel__ask_documents`, `mcp__docintel__list_documents`, and so on. Tested: Claude Code loaded the server from a configuration file, called `list_documents` and `get_page_image`, and read the heading from the returned page image.
+
+**Claude Desktop** uses the same JSON format in `claude_desktop_config.json`. Not tested.
+
+```json
+{
+  "mcpServers": {
+    "docintel": {
+      "command": "/absolute/path/to/mcp-server/.venv/bin/python",
+      "args": ["/absolute/path/to/mcp-server/server.py"],
+      "env": { "DOCINTEL_URL": "http://localhost:8000", "DOCINTEL_API_KEY": "your-key" }
+    }
+  }
+}
+```
+
+**opencode.** Add this to `opencode.json`. The format comes from the opencode documentation. Not tested, because opencode was not installed on the test machine. The format can differ between opencode versions, so check the documentation for yours.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "docintel": {
+      "type": "local",
+      "command": ["/absolute/path/to/mcp-server/.venv/bin/python", "/absolute/path/to/mcp-server/server.py"],
+      "environment": { "DOCINTEL_URL": "http://localhost:8000", "DOCINTEL_API_KEY": "your-key" },
+      "enabled": true
+    }
+  }
+}
+```
+
+**pi.** pi has no built-in MCP support. Install an MCP adapter extension for pi, and register the same command and environment as above. Not tested with a published adapter. If you write your own bridge, it must:
+
+1. send `initialize`, wait for the reply, and then send the notification `notifications/initialized`, before any other request;
+2. run a tool with the method `tools/call` and the parameters `{name, arguments}`, not with the tool name as the method;
+3. match each reply to its request by `id`.
+
+A bridge that skips these steps cannot use any standard MCP server, including this one. The tool `get_page_image` returns a large image (about 90 KB as text). If your bridge cannot pass images to the model as images, leave this tool out.
+
+### Security
+
+- The AI client starts the MCP server on your machine. The API key is in the client's configuration file. Anyone who can read that file can read the key.
+- The questions, the answers, and the page images pass to the AI model of your client. Do not connect a client to confidential reports unless you accept that.
+
+### Limits
+
+- The MCP server uses stdio only. It runs on the same machine as the client.
+- `ask_documents` writes to history, so a client can fill the history with test questions.
+- The assistant decides when to call a tool. The system does not check that the assistant reports `refused` honestly.
+
 ## Configuration
 
 ### Server
@@ -540,6 +646,13 @@ npm test                              # 19 tests
 npm run typecheck
 ```
 
+Run the MCP server tests (in `mcp-server/`):
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q                             # 22 tests
+```
+
 | File | What it tests |
 |---|---|
 | `tests/test_checks.py` | Number parsing, total checks, table-against-vision check |
@@ -549,13 +662,15 @@ npm run typecheck
 | `tests/test_history.py` | The history tables against a real Postgres: titles, ordering, follow-ups, deletion (opt-in) |
 | `tests/test_server_history.py` | History in the REST routes: history off, a failed save, the full flow with Postgres |
 | `tests/test_retrieval.py` | Dense, hybrid, and reranked search, the document filter, and re-ingestion, with the real local models (opt-in) |
+| `mcp-server/tests/test_tools.py` | Each tool against a mock network: request format, key header, URL encoding, error messages |
+| `mcp-server/tests/test_protocol.py` | The real server over stdio, called with the MCP SDK client: handshake, tools, annotations, structured results, images, errors |
 | `ui/src/api.test.ts` | Key header, error handling, request format |
 | `ui/src/components/AnswerCard.test.tsx` | Refusal badge, citation buttons, page image, load errors |
 | `ui/src/App.test.tsx` | Asking, errors, follow-ups in one conversation, history list, reopen, two-step delete, new chat, key prompt |
 
 The UI tests run against an in-memory fake of the server API. They do not test the real server.
 
-The workflow `.github/workflows/ci.yml` has two jobs for each push and pull request. The `server` job runs `pytest -q` on Python 3.12 and 3.14 with a Postgres service, so the history tests run. The `ui` job runs the type-check, the tests, and the build on Node 22. An earlier version of the workflow (server job only) passed. The split into two jobs has **not run yet**.
+The workflow `.github/workflows/ci.yml` has three jobs for each push and pull request (`server`, `ui`, and `mcp-server`). The `server` job runs `pytest -q` on Python 3.12 and 3.14 with a Postgres service, so the history tests run. The `ui` job runs the type-check, the tests, and the build on Node 22. The `server` and `ui` jobs passed on the last push. The `mcp-server` job has **not run yet**.
 
 ## Key decisions and trade-offs
 
@@ -568,6 +683,7 @@ The workflow `.github/workflows/ci.yml` has two jobs for each push and pull requ
 | Keep hybrid search and the reranker off by default | The first test shows a small gain on one question only. | A possible quality gain is not used until the full test. |
 | Make the UI a separate service (React, TypeScript, Vite) that uses only the REST API | The UI and the server can change, deploy, and scale on their own. The REST API is the contract between them. | Two images and two build steps. The UI cannot call the CLI or gRPC. |
 | Forward `/api` through the UI's own web server (nginx or Vite) | The browser sees one host, so no CORS and no cross-site rules. | The UI image must know where the server is (`API_UPSTREAM`). |
+| Make the MCP server a thin client of the REST API | It never touches the index (embedded Qdrant allows one process). It works with a local or a Docker server. The REST API stays the only contract. | The server service must be running. One more hop for each call. |
 | Use no UI library and no state library | The app is small. Fewer dependencies to keep up to date. | More hand-written CSS. Revisit if the UI grows. |
 | Use local models for embeddings, keyword search, and reranking | No second API key. Evaluation runs again at no cost. | The models are small (384 dimensions for embeddings). |
 | Evaluate retrieval with evidence strings | A page-only check passes without the needed fact. | You must write evidence strings for each question. |
@@ -607,6 +723,7 @@ The workflow `.github/workflows/ci.yml` has two jobs for each push and pull requ
 | Cited page image in the web UI | Done |
 | Document filter and multi-document questions | Done. Top-k is shared across documents. |
 | Authentication, request logging, cost report | Done (one static key, no rate limit, no TLS) |
+| MCP server for AI assistants | Done: `mcp-server/`, 5 tools, 22 tests. Tested with the MCP SDK client and Claude Code. Not tested with opencode or pi. |
 | UI as a separate React service | Done: `ui/`, with its own tests, image, and CI job |
 | Conversation history in Postgres | Done: save, list, reopen, delete. History is not used as model context. |
 | Qdrant server and separate processes | Done (`docker-compose.yml`, `server.py rest\|grpc`) |
@@ -642,6 +759,9 @@ server/                      The server service (Python)
   docintel_pb2*.py           Generated gRPC code. Do not edit.
   tests/                     Server tests
   Dockerfile, .env.example   Image and configuration template
+mcp-server/                  The MCP service (Python, MCP SDK)
+  server.py                  The five tools. Calls the REST API.
+  tests/                     Tool tests and a protocol test over stdio
 ui/                          The UI service (React and TypeScript)
   src/                       App, components, API client, tests
   Dockerfile                 Vite build, served by nginx
