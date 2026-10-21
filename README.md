@@ -4,20 +4,33 @@ This project answers questions about company reports. Each answer shows the page
 
 The sample document is the fictional "Kirana Logistics Group Annual Report 2025" (13 pages). The pipeline also works on other PDF files without code changes. You can ingest more than one document and ask questions across all of them.
 
+## Screenshots
+
+**Web UI.** The page after start-up, with conversation history turned on and no question asked yet.
+
+![Web UI](assets/ui.png)
+
+**CLI.** Real output of `ingest.py` and `eval.py --retrieval-only`, rendered as an image. The run used no vision pass, so the chart, tile, and scan questions fail by design.
+
+![CLI output](assets/cli.png)
+
+> **Note:** These images show no answers, because answers need a model API. Take new screenshots of answers after you fill in `.env`.
+
 ## Contents
 
 1. [Quick start](#quick-start)
 2. [How the system works](#how-the-system-works)
 3. [Interfaces](#interfaces)
-4. [Configuration](#configuration)
-5. [Logging and cost](#logging-and-cost)
-6. [Evaluation](#evaluation)
-7. [Tests and continuous integration](#tests-and-continuous-integration)
-8. [Key decisions and trade-offs](#key-decisions-and-trade-offs)
-9. [Known limitations](#known-limitations)
-10. [Roadmap status](#roadmap-status)
-11. [How AI tools were used](#how-ai-tools-were-used)
-12. [Repository files](#repository-files)
+4. [Conversation history](#conversation-history)
+5. [Configuration](#configuration)
+6. [Logging and cost](#logging-and-cost)
+7. [Evaluation](#evaluation)
+8. [Tests and continuous integration](#tests-and-continuous-integration)
+9. [Key decisions and trade-offs](#key-decisions-and-trade-offs)
+10. [Known limitations](#known-limitations)
+11. [Roadmap status](#roadmap-status)
+12. [How AI tools were used](#how-ai-tools-were-used)
+13. [Repository files](#repository-files)
 
 ## Quick start
 
@@ -29,7 +42,7 @@ The sample document is the fictional "Kirana Logistics Group Annual Report 2025"
   - a text model for answers,
   - a text model for grading (can be the same model as the answer model).
 - Internet access for the first run. The local embedding models download once.
-- Docker, only if you want to run Qdrant as a server (optional).
+- Docker, only if you want to run Qdrant or Postgres as a server (optional).
 
 ### Run in five commands
 
@@ -182,6 +195,7 @@ Request fields:
 |---|---|---|
 | `question` | string | 1 to 2,000 characters |
 | `doc` | string or null | Name of one ingested document. If null, the search covers all documents. |
+| `conversation_id` | UUID or null | Continue a saved conversation. If null, the system starts a new one. Needs [history](#conversation-history). |
 
 Response fields:
 
@@ -194,14 +208,18 @@ Response fields:
 | `retrieved` | list of `{doc, page}` | Pages of the chunks sent to the model |
 | `seconds` | number | Time to answer |
 | `tokens` | integer | Total tokens used by the answer call. Zero if the proxy does not report usage. |
+| `conversation_id` | string or null | The conversation that holds this turn. Null when history is off or the save failed. |
 
 Other routes:
 
 | Route | Result |
 |---|---|
-| `GET /health` | `{"ok": true}`. No key needed. |
+| `GET /health` | `{"ok": true, "history": <true or false>}`. No key needed. |
 | `GET /documents` | List of ingested document names |
 | `GET /page/{doc}/{page}.png` | Image of one page of an ingested document |
+| `GET /conversations` | The 50 most recent conversations. Needs history. |
+| `GET /conversations/{id}` | One conversation with all its messages. Needs history. |
+| `DELETE /conversations/{id}` | Delete a conversation and its messages (status 204). Needs history. |
 | `GET /` | The web UI. No key needed. |
 
 Status codes:
@@ -209,16 +227,17 @@ Status codes:
 | Code | Cause |
 |---|---|
 | 200 | Success |
+| 400 | A `conversation_id` was sent, but history is off |
 | 401 | The API key is missing or wrong (only when `API_KEY` is set) |
-| 404 | The document is unknown, or the page is outside the document |
-| 422 | The question is empty or longer than 2,000 characters |
+| 404 | The document, page, or conversation is unknown. Also for the history routes when history is off. |
+| 422 | The question is empty or too long, or an id is not a UUID |
 | 502 | The model proxy or the vector store failed |
 
 ### gRPC
 
-The service is defined in `docintel.proto`. It has one method: `DocIntel.Ask(AskRequest) returns (AskReply)`. The messages have the same fields as the REST request and response. A `Source` message holds `doc` and `page`.
+The service is defined in `docintel.proto`. It has one method: `DocIntel.Ask(AskRequest) returns (AskReply)`. The messages have the same fields as the REST request and response. A `Source` message holds `doc` and `page`. `conversation_id` is a string (empty means none).
 
-Status codes: `INVALID_ARGUMENT` for an empty question. `NOT_FOUND` for an unknown document. `UNAUTHENTICATED` for a missing or wrong key. `UNAVAILABLE` for a backend failure.
+Status codes: `INVALID_ARGUMENT` for an empty question or an id that is not a UUID. `NOT_FOUND` for an unknown document or conversation. `FAILED_PRECONDITION` for a conversation id when history is off. `UNAUTHENTICATED` for a missing or wrong key. `UNAVAILABLE` for a backend failure.
 
 Example with `grpcurl`:
 
@@ -239,10 +258,11 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. docintel.prot
 
 Open `http://localhost:8000/`. Type a question, optionally choose one document, and select **Ask**. The page shows:
 
-- the answer,
+- the questions and answers of the current conversation, in order,
 - a "Not in the document" badge when the system refuses,
 - one button for each cited page. Select a button to show or hide the image of that page,
-- a note when the system removed a citation that it could not verify.
+- a note when the system removed a citation that it could not verify,
+- when history is on, a list of saved conversations. Select one to reopen it. Select **New chat** to start another. **Delete** asks you to select it twice.
 
 If the server needs a key, the page shows a key field. The page keeps the key in the browser session only. The page supports light and dark mode.
 
@@ -268,6 +288,41 @@ python server.py grpc                      # gRPC only
 
 With a Qdrant server, the CLI, `eval.py`, and `ingest.py` can also run while the servers run.
 
+## Conversation history
+
+When you set `DATABASE_URL`, the server saves every question and answer in Postgres. The web UI shows the saved conversations and lets you reopen or delete them. Without `DATABASE_URL`, history is off and everything else works as before.
+
+### Turn it on
+
+```bash
+docker compose up -d postgres        # set POSTGRES_PORT if port 5432 is taken
+# add to .env:
+# DATABASE_URL=postgresql://docintel:docintel@localhost:5432/docintel
+python server.py
+```
+
+The server creates the tables when it starts. If `DATABASE_URL` is set but the database cannot be reached, the server stops at start-up with an error.
+
+### What is saved
+
+| Table | Contents |
+|---|---|
+| `conversations` | `id` (UUID), `title` (the first 60 characters of the first question), `created_at`, `updated_at` |
+| `messages` | `conversation_id`, `role` (`user` or `assistant`), `content`, `doc`, and for answers: `citations`, `rejected_citations`, `retrieved` (JSON), `refused`, `seconds`, `tokens` |
+
+Deleting a conversation deletes its messages.
+
+### Rules
+
+- A request without `conversation_id` starts a new conversation. A request with one adds to it.
+- The server checks the conversation **before** it calls the model. An unknown id does not cost a model call.
+- If the save fails after the model answered, the server still returns the answer. The failure goes to `logs/requests.jsonl` (kind `history`). The reply then has `conversation_id` set to null, or to the id that the client sent.
+- REST and gRPC share the same history.
+- The CLI (`ask.py`) does not save history.
+- The system stores the conversation, but it does **not** use it as context. See [Known limitations](#known-limitations).
+
+> **Note:** The stored messages contain the text of questions and answers. Protect the database in the same way as the questions.
+
 ## Configuration
 
 Set these values in `.env`. Do not commit this file. The file `.gitignore` excludes it.
@@ -287,6 +342,8 @@ Set these values in `.env`. Do not commit this file. The file `.gitignore` exclu
 | `QDRANT_URL` | No | | URL of a Qdrant server. If not set, the system uses a local folder (`qdrant_data/`). |
 | `QDRANT_PORT` | No | 6333 | Host port that `docker-compose.yml` uses |
 | `API_KEY` | No | | One or more API keys, separated by commas. If not set, there is no authentication. |
+| `DATABASE_URL` | No | | Postgres connection string. If set, history is on. |
+| `POSTGRES_PORT`, `POSTGRES_PASSWORD` | No | 5432, `docintel` | Host port and password that `docker-compose.yml` uses. Change the password on any shared host. |
 | `HOST` | No | `127.0.0.1` | Bind address of `server.py` |
 | `PORT` | No | 8000 | REST and web UI port |
 | `GRPC_PORT` | No | 50051 | gRPC port |
@@ -389,8 +446,9 @@ Run the tests:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q                             # 26 fast tests; no model download, no API
+pytest -q                             # 30 fast tests; no model download, no API, no database
 RUN_MODEL_TESTS=1 pytest -q           # also runs 4 tests with the real local models
+DATABASE_URL=postgresql://docintel:docintel@localhost:5432/docintel pytest -q   # also runs 8 history tests
 ```
 
 | File | What it tests |
@@ -399,9 +457,11 @@ RUN_MODEL_TESTS=1 pytest -q           # also runs 4 tests with the real local mo
 | `tests/test_ingest_helpers.py` | Markdown tables, captions, prose chunking |
 | `tests/test_ask.py` | Citation check, source merging, page labels, JSON fallback, logging (with a fake model) |
 | `tests/test_server.py` | REST routes, validation, error codes, authentication, page images, path-traversal attempt |
+| `tests/test_history.py` | The history tables against a real Postgres: titles, ordering, follow-ups, deletion (opt-in) |
+| `tests/test_server_history.py` | History in the REST routes: history off, a failed save, the full flow with Postgres |
 | `tests/test_retrieval.py` | Dense, hybrid, and reranked search, the document filter, and re-ingestion, with the real local models (opt-in) |
 
-The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14 for each push and pull request. The workflow has **not run yet**; it runs after the first push.
+The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14 for each push and pull request. It passed on both versions on the last push. Since then, the workflow gained a Postgres service so that the history tests run too. That change has **not run yet**.
 
 ## Key decisions and trade-offs
 
@@ -417,6 +477,8 @@ The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14
 | Check citations against retrieved pages | The model can cite a page it never saw. | The check cannot tell if a retrieved page really supports the fact. |
 | Use embedded Qdrant by default | Setup needs no server or container. | One process can open the index at a time. A compose file gives a Qdrant server. |
 | Log every model call in one JSON-lines file | One source for latency, errors, and cost. | The file contains question text. |
+| Store history in Postgres, one connection for each call | Postgres is the standard choice for this data. A connection for each call is the simplest code. | Slower under high load. Add a connection pool then. |
+| Do not fail a request when the history save fails | The model call already cost time and money. | A conversation can have a missing turn. The log shows it. |
 | Use one static API key | Simple, and enough for an internal service. | No user identity, no key rotation, no rate limit, no TLS. |
 | Set the model temperature to 0 | Answers are more repeatable for evaluation. | Not fully repeatable on all providers. |
 
@@ -428,7 +490,9 @@ The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14
 - **Simple security.** Authentication is one shared key per deployment. The REST and gRPC interfaces have no encryption (TLS). Put a reverse proxy with TLS in front of them on any network that is not trusted.
 - **Shared top-k across documents.** A question about several documents uses one top-k list. One document can fill the list and hide another. The answer can then miss a document.
 - **Rules that need missing data.** The model must say what the report does not state. For example, the report gives only annual utilisation, but its watch-list rule uses quarterly values. Question 19 tests this case. The model can still fail it.
-- **No conversation memory.** Each question is independent.
+- **History is stored but not used.** The model does not see earlier turns. A follow-up such as "And in 2023?" does not know the earlier question. A query rewrite that uses the history is not built.
+- **No users.** Every client with a valid key sees all conversations. There is no per-user separation.
+- **History is a server feature.** The CLI does not save history.
 - **Cost is an estimate.** Cost comes from the token counts that the proxy reports and from the prices that you set. If the proxy does not report tokens, the report shows zero.
 - **Few documents tested.** The pipeline was tested on one report. Other layouts (for example, scanned pages with no text layer, or tables without lines) are not tested.
 - **Not yet verified end to end.** The vision pass, the answer step, and the judge were not run with a real model in this repository state. Only the code paths that need no model API were run.
@@ -444,6 +508,7 @@ The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14
 | Cited page image in the web UI | Done |
 | Document filter and multi-document questions | Done. Top-k is shared across documents. |
 | Authentication, request logging, cost report | Done (one static key, no rate limit, no TLS) |
+| Conversation history in Postgres | Done: save, list, reopen, delete. History is not used as model context. |
 | Qdrant server and separate processes | Done (`docker-compose.yml`, `server.py rest\|grpc`) |
 | More evaluation questions from a second reviewer | Not done. This needs a person. |
 | Automated tests and continuous integration | Tests done. The CI workflow has not run yet. |
@@ -454,7 +519,8 @@ The workflow `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 and 3.14
 2. Repeat the retrieval comparison with the vision data. Keep hybrid search or the reranker only if the results improve.
 3. Add a chart-against-total check.
 4. Ask a second reviewer for more evaluation questions.
-5. Add TLS (through a proxy), a rate limit, and a retention rule for `logs/`.
+5. Use the history as context: rewrite a follow-up question into a full question before the search.
+6. Add users (so that each person sees only their own conversations), TLS (through a proxy), a rate limit, and a retention rule for `logs/` and for the history.
 
 ## How AI tools were used
 
@@ -475,7 +541,9 @@ The author used Claude Code (an AI coding assistant) to plan the design, write t
 | `docintel.proto` | gRPC service definition |
 | `docintel_pb2.py`, `docintel_pb2_grpc.py` | Generated gRPC code. Do not edit. |
 | `static/index.html` | Web UI |
-| `docker-compose.yml` | Qdrant server (optional) |
+| `history.py` | Conversation history in Postgres |
+| `docker-compose.yml` | Qdrant server and Postgres (both optional) |
+| `assets/` | Screenshots for this README |
 | `tests/`, `pytest.ini`, `requirements-dev.txt` | Automated tests |
 | `.github/workflows/ci.yml` | Continuous integration |
 | `.env.example` | Template for the configuration |
