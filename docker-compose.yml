@@ -1,0 +1,14 @@
+# Qdrant as a server, so several processes (REST, gRPC, CLI, eval) can share the index.
+# Start: docker compose up -d      Then set QDRANT_URL=http://localhost:6333 in .env
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: docintel-qdrant
+    ports:
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"   # local only; set QDRANT_PORT if 6333 is taken
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  qdrant_storage:

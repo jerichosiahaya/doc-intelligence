@@ -1,8 +1,8 @@
-"""Usage: python server.py
+"""Usage: python server.py [both|rest|grpc]
 
-One process: REST + web UI on :8000, gRPC on :50051. Qdrant's embedded mode
-locks its folder, so this is the only process that may open it (set
-QDRANT_URL to use a Qdrant server and lift that limit).
+both (default): REST + web UI on :8000 and gRPC on :50051 in one process.
+rest / grpc: one interface per process. Embedded Qdrant locks its folder to one
+process, so run separate processes only with QDRANT_URL set (see docker-compose.yml).
 """
 import os
 import secrets
@@ -106,14 +106,24 @@ class DocIntel(pb_grpc.DocIntelServicer):
         return pb.AskReply(**r.model_dump())
 
 
-@asynccontextmanager
-async def lifespan(_):
+MODE = "both"
+
+
+def grpc_server():
     g = grpc.server(ThreadPoolExecutor(max_workers=4), interceptors=[KeyInterceptor()])
     pb_grpc.add_DocIntelServicer_to_server(DocIntel(), g)
     g.add_insecure_port(f"{os.environ.get('HOST', '127.0.0.1')}:{os.environ.get('GRPC_PORT', 50051)}")
-    g.start()
+    return g
+
+
+@asynccontextmanager
+async def lifespan(_):
+    g = grpc_server() if MODE == "both" else None
+    if g:
+        g.start()
     yield
-    g.stop(grace=2)
+    if g:
+        g.stop(grace=2)
 
 
 app = FastAPI(title="Document Intelligence", lifespan=lifespan)
@@ -156,7 +166,16 @@ def ui():
 
 
 if __name__ == "__main__":
+    MODE = sys.argv[1] if len(sys.argv) > 1 else "both"
+    if MODE not in ("both", "rest", "grpc"):
+        sys.exit("usage: python server.py [both|rest|grpc]")
     host = os.environ.get("HOST", "127.0.0.1")
     if host not in LOCAL and not API_KEYS:
         sys.exit(f"Refusing to listen on {host} without API_KEY. Set API_KEY in .env.")
-    uvicorn.run(app, host=host, port=int(os.environ.get("PORT", 8000)))
+    if MODE == "grpc":
+        g = grpc_server()
+        g.start()
+        print(f"gRPC listening on {host}:{os.environ.get('GRPC_PORT', 50051)}")
+        g.wait_for_termination()
+    else:
+        uvicorn.run(app, host=host, port=int(os.environ.get("PORT", 8000)))
