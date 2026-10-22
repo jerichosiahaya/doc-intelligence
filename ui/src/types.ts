@@ -11,6 +11,7 @@ export interface Candidate {
   caption: string;
   score: number;
   used: boolean;
+  snippet?: string;
 }
 
 export interface Stats {
@@ -66,8 +67,24 @@ export interface Conversation {
   messages: StoredMessage[];
 }
 
+export interface ModelList {
+  default: string | null;
+  models: string[];
+}
+
+export interface Job {
+  id: string;
+  name: string;
+  status: "queued" | "running" | "done" | "error";
+  stage: string;
+  done: number;
+  total: number;
+  chunks: number | null;
+  error: string | null;
+  replaces: boolean;
+}
+
 export type Turn =
   | { id: number; kind: "question"; text: string }
-  | { id: number; kind: "pending" }
-  | { id: number; kind: "answer"; data: AnswerData }
+  | { id: number; kind: "answer"; data: AnswerData; streaming: boolean }
   | { id: number; kind: "error"; message: string };

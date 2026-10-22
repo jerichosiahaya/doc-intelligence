@@ -250,6 +250,12 @@ Other routes:
 |---|---|
 | `GET /health` | `{"ok": true, "history": <true or false>}`. No key needed. |
 | `GET /documents` | List of ingested document names |
+| `POST /documents` | Add a PDF (multipart field `file`). Status 202 and a job. A file with the name of an existing document replaces it. |
+| `DELETE /documents/{name}` | Remove a document: its chunks and its PDF (status 204). Status 409 while it is being ingested. |
+| `GET /jobs`, `GET /jobs/{id}` | Ingest jobs: `status` (`queued`, `running`, `done`, `error`), `stage`, `done` and `total` pages, `chunks`, `error` |
+| `GET /stats` | `{"chunks": N, "documents": {name: N}}`: chunks in the vector database |
+| `GET /models` | `{"default": ..., "models": [...]}`: models that the LiteLLM proxy offers |
+| `POST /ask/stream` | Same input as `/ask`, plus an optional `model`. Server-sent events: `candidates` (the search result), `token` (pieces of the answer text), then `done` (the same body as `/ask`) or `error` |
 | `GET /page/{doc}/{page}.png` | Image of one page of an ingested document |
 | `GET /conversations` | The 50 most recent conversations. Needs history. |
 | `GET /conversations/{id}` | One conversation with all its messages. Needs history. |
@@ -262,7 +268,9 @@ Status codes:
 | 200 | Success |
 | 400 | A `conversation_id` was sent, but history is off |
 | 401 | The API key is missing or wrong (only when `API_KEY` is set) |
-| 404 | The document, page, or conversation is unknown. Also for the history routes when history is off. |
+| 404 | The document, page, model, or conversation is unknown. Also for the history routes when history is off. |
+| 400 | Also: an upload is not a PDF, cannot be opened, or has too many pages |
+| 413 | An upload is larger than `MAX_UPLOAD_MB` |
 | 422 | The question is empty or too long, or an id is not a UUID |
 | 502 | The model proxy or the vector store failed |
 
@@ -291,13 +299,22 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. docintel.prot
 
 The UI is a separate service in `ui/`. It is a React and TypeScript app that Vite builds. It uses no UI library and no state library.
 
-Open `http://localhost:5173` (development) or `http://localhost:8080` (Docker). Type a question, optionally choose one document, and select **Ask**. The page shows:
+Open `http://localhost:5173` (development) or `http://localhost:8080` (Docker). The page has a navigation column on the left and one large question box. Type a question and press Enter (Shift+Enter starts a new line). In the box you can:
 
-- the questions and answers of the current conversation, in order,
-- a "Not in the document" badge when the system refuses,
-- one button for each cited page. Select a button to show or hide the image of that page,
-- a note when the system removed a citation that it could not verify,
-- when history is on, a list of saved conversations. Select one to reopen it. Select **New chat** to start another. **Delete** asks you to select it twice.
+- choose one document, or all documents,
+- choose the answer **model** from the list that the LiteLLM proxy offers (`GET /models`). The default is `ANSWER_MODEL`,
+- select the paperclip to **add a PDF**.
+
+An answer appears in this order:
+
+- **Sources**: one card for each chunk that was sent to the model, numbered, with its page. A card with an accent border is cited by the answer. Select a card to show the image of its page,
+- **Answer**: the text **streams** word by word. A number in the text, for example `[report p.4]`, becomes a chip that opens its source card. A "Not in the document" badge shows when the system refuses,
+- **Retrieval details**: how many candidates the search found, how many went to the model, and the relevancy score of each one,
+- a note when the system removed a citation that it could not verify.
+
+Select **Documents** in the navigation column to see the documents, the chunk count of each, and the total in the vector database. In the same dialog you can drop or choose a PDF. The page shows the progress ("Reading page 4 of 13"). A vision model reads every page, so a 13-page report takes about two minutes. Uploads run one at a time. **Remove** deletes a document (it asks twice).
+
+When history is on, the navigation column also lists the saved conversations. Select one to reopen it (the candidate list is not saved, so an old answer shows only its pages). Select **New thread** to start another. **Delete** asks you to select it twice.
 
 If the server needs a key, the page shows a key field. The page keeps the key in the browser session only. The page supports light and dark mode.
 
@@ -319,8 +336,9 @@ Because the browser sees one host, the Docker setup needs no CORS setting.
 |---|---|
 | `ui/src/api.ts` | The only code that calls the server. Adds the API key header, turns errors into `ApiError`. |
 | `ui/src/App.tsx` | State of the page: conversations, current thread, errors, key prompt |
-| `ui/src/components/` | `AskForm`, `AnswerCard` (with the cited page image), `Sidebar` (history), `KeyBar` |
-| `ui/src/*.test.ts(x)` | 19 tests with Vitest and Testing Library, against a fake of the server API |
+| `ui/src/components/` | `Composer` (question box, document and model choice), `AnswerCard` (sources, streaming text, candidates), `Sidebar`, `DocumentsPanel` (upload and remove), `KeyBar` |
+| `ui/src/useUploads.ts` | Uploads a PDF and follows its ingest job |
+| `ui/src/*.test.ts(x)` | 33 tests with Vitest and Testing Library, against a fake of the server API |
 | `ui/Dockerfile`, `ui/nginx.conf.template` | Production image: Vite build, served by nginx, `/api` forwarded to the server |
 
 Commands, in `ui/`: `npm run dev`, `npm run typecheck`, `npm test`, `npm run build`.
@@ -517,6 +535,8 @@ Set these values in `server/.env`. Do not commit this file. The file `.gitignore
 | `HOST` | No | `127.0.0.1` | Bind address of `server.py` |
 | `PORT` | No | 8000 | REST port |
 | `GRPC_PORT` | No | 50051 | gRPC port |
+| `MAX_UPLOAD_MB` | No | 30 | Largest PDF that `POST /documents` accepts |
+| `MAX_PAGES` | No | 100 | Most pages in an uploaded PDF. Each page is one vision call. |
 | `CORS_ORIGINS` | No | | Origins (separated by commas) that may call the REST API from a browser. Needed only when the UI is on another host without a proxy. |
 | `PRICE_IN`, `PRICE_OUT` | No | | Answer model price, in USD per million tokens |
 | `PRICE_VISION_IN`, `PRICE_VISION_OUT` | No | | Vision model price, in USD per million tokens |
@@ -637,7 +657,7 @@ Run the server tests (in `server/`):
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q                             # 32 fast tests; no model download, no API, no database
+pytest -q                             # 53 fast tests; no model download, no API, no database
 RUN_MODEL_TESTS=1 pytest -q           # also runs 4 tests with the real local models
 DATABASE_URL=postgresql://docintel:docintel@localhost:5432/docintel pytest -q   # also runs 8 history tests
 ```
@@ -645,7 +665,7 @@ DATABASE_URL=postgresql://docintel:docintel@localhost:5432/docintel pytest -q   
 Run the UI tests (in `ui/`):
 
 ```bash
-npm test                              # 19 tests
+npm test                              # 33 tests
 npm run typecheck
 ```
 

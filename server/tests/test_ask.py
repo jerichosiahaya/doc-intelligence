@@ -91,3 +91,35 @@ def test_answer_reports_candidates_and_which_were_sent(monkeypatch):
     out = ask.answer("q")
     assert [(c["pages"], c["used"]) for c in out["candidates"]] == [([4], True), ([5], False)]
     assert out["retrieved_pages"] == [4] and out["score_kind"] == "cosine"
+
+
+def test_answer_text_grows_and_never_takes_text_back():
+    full = json.dumps({"answer": 'Line\n"q" é \U0001F600 end', "citations": [], "refused": False})
+    seen = ""
+    for n in range(len(full) + 1):
+        text = ask._answer_text(full[:n])
+        assert text.startswith(seen)
+        seen = text
+    assert seen == 'Line\n"q" é \U0001F600 end'
+    assert ask._answer_text("no json yet") == ""
+
+
+def test_answer_stream_yields_candidates_tokens_and_the_final_dict(monkeypatch):
+    _patch(monkeypatch, "")
+    body = json.dumps({"answer": "Net profit was 5.", "citations": [{"doc": D, "page": 4}], "refused": False})
+    usage = SimpleNamespace(total_tokens=30, prompt_tokens=20, completion_tokens=10)
+    parts = [body[i:i + 7] for i in range(0, len(body), 7)]
+    events = [SimpleNamespace(usage=None, choices=[SimpleNamespace(delta=SimpleNamespace(content=p))]) for p in parts]
+    events.append(SimpleNamespace(usage=usage, choices=[]))  # the usage event has no choices
+    seen = {}
+
+    def create(**kw):
+        seen.update(kw)
+        return iter(events)
+
+    monkeypatch.setattr(ask, "llm", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    out = list(ask.answer_stream("q", model="other"))
+    assert out[0][0] == "candidates" and out[-1][0] == "done"
+    assert "".join(t for k, t in out if k == "token") == "Net profit was 5."
+    assert out[-1][1]["tokens"] == 30 and out[-1][1]["citations"] == [{"doc": D, "page": 4}]
+    assert seen["model"] == "other" and seen["stream"] is True

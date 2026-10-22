@@ -80,7 +80,10 @@ def prose_chunks(text):
         yield buf
 
 
-def main(pdf, use_vision=True):
+def main(pdf, use_vision=True, progress=None, release=True):
+    """progress(stage, done, total) is called after each page and once for indexing.
+    release=False keeps the Qdrant client open, for a server that shares it."""
+    progress = progress or (lambda *a: None)
     doc = fitz.open(pdf)
     name = Path(pdf).stem
     Path("docs").mkdir(exist_ok=True)
@@ -107,6 +110,7 @@ def main(pdf, use_vision=True):
             v = vision(page.get_pixmap(dpi=170).tobytes("png"))
             chunks.append(dict(doc=name, page=pno, type="vision", source="vision",
                                caption=" / ".join(captions(v, "Figure")), text=v))
+        progress("reading", pno, len(doc))
     vis = {c["page"]: c["text"] for c in chunks if c["type"] == "vision"}
     warnings = []
     for c in chunks:
@@ -124,6 +128,7 @@ def main(pdf, use_vision=True):
         for c in chunks:
             f.write(json.dumps(c, ensure_ascii=False) + "\n")
 
+    progress("indexing", len(doc), len(doc))
     texts = [f"{c['caption']}\n{c['text']}".strip() for c in chunks]
     q = qdrant()
     q.delete(COLLECTION, models.FilterSelector(filter=models.Filter(must=[
@@ -132,11 +137,13 @@ def main(pdf, use_vision=True):
         models.PointStruct(id=str(uuid.uuid4()), vector={"dense": d, "bm25": b}, payload=c)
         for c, d, b in zip(chunks, embed(texts), sparse(texts))
     ])
-    close_qdrant()
+    if release:
+        close_qdrant()
     json.dump(warnings, open("warnings.json", "w"), indent=2)
     for w in warnings:
         print("WARNING", w)
     print(f"{name}: {len(chunks)} chunks from {len(doc)} pages -> chunks.jsonl and the index")
+    return len(chunks)
 
 
 if __name__ == "__main__":

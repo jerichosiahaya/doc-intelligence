@@ -10,3 +10,4 @@ grpcio
 grpcio-tools
 protobuf
 psycopg[binary]
+python-multipart

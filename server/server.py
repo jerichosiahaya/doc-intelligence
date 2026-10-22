@@ -5,9 +5,14 @@ both (default): REST on :8000 and gRPC on :50051 in one process.
 rest / grpc: one interface per process. Embedded Qdrant locks its folder to one
 process, so run separate processes only with QDRANT_URL set (see docker-compose.yml).
 """
+import json
 import os
+import re
 import secrets
+import shutil
 import sys
+import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -16,20 +21,23 @@ from pathlib import Path
 import grpc
 import pymupdf
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 import history
 import docintel_pb2 as pb
 import docintel_pb2_grpc as pb_grpc
-from ask import answer
-from rag import COLLECTION, models, qdrant
+import ingest
+from ask import answer, answer_stream
+from rag import COLLECTION, llm, models, qdrant
 from reqlog import log
 
 DOCS = Path("docs")  # ingest.py keeps a copy of each PDF here
 API_KEYS = [k.strip() for k in os.environ.get("API_KEY", "").split(",") if k.strip()]  # empty = no auth (local use)
+MAX_UPLOAD = int(float(os.environ.get("MAX_UPLOAD_MB", 30)) * 1024 * 1024)
+MAX_PAGES = int(os.environ.get("MAX_PAGES", 100))  # each page costs one vision call
 LOCAL = ("127.0.0.1", "localhost", "::1")
 
 
@@ -63,6 +71,10 @@ class HistoryOff(Exception):
     pass
 
 
+class UnknownModel(Exception):
+    pass
+
+
 class Source(BaseModel):
     doc: str
     page: int
@@ -71,6 +83,7 @@ class Source(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     doc: str | None = None
+    model: str | None = None  # a model from GET /models; omit for the server default (ANSWER_MODEL)
     conversation_id: uuid.UUID | None = None  # continue a saved conversation; omit to start a new one
 
 
@@ -81,6 +94,7 @@ class Candidate(BaseModel):
     caption: str
     score: float
     used: bool  # sent to the model (the top K); the rest were fetched but cut
+    snippet: str = ""  # the start of the chunk text, to tell sources apart
 
 
 class AskReply(BaseModel):
@@ -100,14 +114,30 @@ def doc_names():
     return sorted(p.stem for p in DOCS.glob("*.pdf"))
 
 
-def ask(question: str, doc: str | None = None, via: str = "rest", conversation_id: uuid.UUID | None = None) -> AskReply:
+_models = (0.0, [])  # (fetched at, ids)
+
+
+def model_ids() -> list[str]:
+    """Models that the LiteLLM proxy offers. Cached for 5 minutes."""
+    global _models
+    if time.time() - _models[0] > 300:
+        _models = (time.time(), sorted(m.id for m in llm().models.list()))
+    return _models[1]
+
+
+def precheck(doc, conversation_id, model):
+    """Fail before the model call, not after."""
     if doc and doc not in doc_names():
         raise UnknownDoc(doc)
     if conversation_id and not history.enabled():
         raise HistoryOff()
-    if conversation_id and not history.exists(conversation_id):  # check before the model call, not after
+    if conversation_id and not history.exists(conversation_id):
         raise history.UnknownConversation(str(conversation_id))
-    a = answer(question, doc, via=via)
+    if model and model not in model_ids():
+        raise UnknownModel(model)
+
+
+def build_reply(a, question, doc, via, conversation_id) -> AskReply:
     reply = AskReply(
         answer=str(a["answer"]),
         citations=a["citations"],
@@ -126,6 +156,13 @@ def ask(question: str, doc: str | None = None, via: str = "rest", conversation_i
         except Exception as e:
             log(kind="history", via=via, status="error", error=str(e)[:300])
     return reply
+
+
+def ask(question: str, doc: str | None = None, via: str = "rest", conversation_id: uuid.UUID | None = None,
+        model: str | None = None) -> AskReply:
+    precheck(doc, conversation_id, model)
+    a = answer(question, doc, via=via, model=model)
+    return build_reply(a, question, doc, via, conversation_id)
 
 
 class DocIntel(pb_grpc.DocIntelServicer):
@@ -204,18 +241,143 @@ def stats():
     return {"chunks": count(), "documents": per_doc}
 
 
+@app.get("/models", dependencies=[Depends(require_key)])
+def models_list():
+    """Models that the LiteLLM proxy offers, and the one used when a request names none."""
+    try:
+        return {"default": os.environ.get("ANSWER_MODEL"), "models": model_ids()}
+    except Exception as e:
+        raise HTTPException(502, f"backend error: {e}")
+
+
+def http_error(e: Exception) -> HTTPException:
+    if isinstance(e, UnknownDoc):
+        return HTTPException(404, f"unknown document: {e}")
+    if isinstance(e, UnknownModel):
+        return HTTPException(404, f"unknown model: {e}")
+    if isinstance(e, history.UnknownConversation):
+        return HTTPException(404, f"unknown conversation: {e}")
+    if isinstance(e, HistoryOff):
+        return HTTPException(400, "history is not enabled (set DATABASE_URL)")
+    return HTTPException(502, f"backend error: {e}")
+
+
+def sse(event: str, data) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.post("/ask/stream", dependencies=[Depends(require_key)])
+def post_ask_stream(req: AskRequest):
+    """Server-sent events: candidates (the search result), token (answer text, in pieces), done (the
+    same body as POST /ask), or error. Problems that exist before the model call return an HTTP error."""
+    try:
+        precheck(req.doc, req.conversation_id, req.model)
+    except Exception as e:
+        raise http_error(e)
+
+    def events():
+        try:
+            for kind, data in answer_stream(req.question, req.doc, via="rest", model=req.model):
+                if kind == "token":
+                    data = {"text": data}
+                elif kind == "done":
+                    data = build_reply(data, req.question, req.doc, "rest", req.conversation_id).model_dump()
+                yield sse(kind, data)
+        except Exception as e:
+            yield sse("error", {"message": f"backend error: {e}"})
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/ask", response_model=AskReply, dependencies=[Depends(require_key)])
 def post_ask(req: AskRequest):
     try:
-        return ask(req.question, req.doc, conversation_id=req.conversation_id)
-    except UnknownDoc:
-        raise HTTPException(404, f"unknown document: {req.doc}")
-    except history.UnknownConversation:
-        raise HTTPException(404, f"unknown conversation: {req.conversation_id}")
-    except HistoryOff:
-        raise HTTPException(400, "history is not enabled (set DATABASE_URL)")
+        return ask(req.question, req.doc, conversation_id=req.conversation_id, model=req.model)
     except Exception as e:
-        raise HTTPException(502, f"backend error: {e}")
+        raise http_error(e)
+
+
+# Uploads. One worker, so ingests run one at a time (they share the vector store and the model quota).
+_ingest_pool = ThreadPoolExecutor(max_workers=1)
+JOBS: dict[str, dict] = {}
+
+
+def safe_name(filename: str) -> str:
+    """A document name that is safe as a file name and inside a citation like [name p.4]."""
+    stem = re.sub(r"[^\w.-]+", "_", Path(filename or "").stem).strip("._")[:80]
+    if not stem:
+        raise HTTPException(400, "the file needs a name")
+    return stem
+
+
+def run_ingest(job: dict, pdf: Path, existed: bool):
+    def progress(stage, done, total):
+        job.update(stage=stage, done=done, total=total)
+
+    job["status"] = "running"
+    try:
+        job["chunks"] = ingest.main(str(pdf), progress=progress, release=False)
+        job["status"] = "done"
+    except Exception as e:
+        job.update(status="error", error=str(e)[:300])
+        if not existed:  # do not leave a document that has no chunks
+            (DOCS / pdf.name).unlink(missing_ok=True)
+        log(kind="ingest", via="rest", status="error", error=str(e)[:300])
+    finally:
+        shutil.rmtree(pdf.parent, ignore_errors=True)
+
+
+@app.post("/documents", status_code=202, dependencies=[Depends(require_key)])
+async def upload_document(file: UploadFile):
+    """Add a PDF. Returns a job; poll GET /jobs/{id}. A file with the name of an existing document replaces it."""
+    name = safe_name(file.filename)
+    data = await file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, f"the file is larger than {MAX_UPLOAD // 1024 // 1024} MB")
+    if not data.startswith(b"%PDF-"):
+        raise HTTPException(400, "the file is not a PDF")
+    try:
+        with pymupdf.open(stream=data, filetype="pdf") as d:
+            pages = len(d)
+    except Exception:
+        raise HTTPException(400, "the PDF cannot be opened")
+    if pages == 0 or pages > MAX_PAGES:
+        raise HTTPException(400, f"the PDF must have 1 to {MAX_PAGES} pages (it has {pages})")
+    tmp = Path(tempfile.mkdtemp(prefix="upload-"))
+    pdf = tmp / f"{name}.pdf"
+    pdf.write_bytes(data)
+    job = {"id": uuid.uuid4().hex[:12], "name": name, "status": "queued", "stage": "queued", "done": 0, "total": pages,
+           "chunks": None, "error": None, "replaces": name in doc_names()}
+    JOBS[job["id"]] = job
+    while len(JOBS) > 20:  # keep the newest 20
+        JOBS.pop(next(iter(JOBS)))
+    _ingest_pool.submit(run_ingest, job, pdf, job["replaces"])
+    return job
+
+
+@app.delete("/documents/{name}", status_code=204, dependencies=[Depends(require_key)])
+def delete_document(name: str):
+    """Remove a document: its chunks in the vector database and its PDF."""
+    if name not in doc_names():  # also keeps a path out of the unlink below
+        raise HTTPException(404, f"unknown document: {name}")
+    if any(j["name"] == name and j["status"] in ("queued", "running") for j in JOBS.values()):
+        raise HTTPException(409, "the document is being ingested")
+    qdrant().delete(COLLECTION, models.FilterSelector(filter=models.Filter(must=[
+        models.FieldCondition(key="doc", match=models.MatchValue(value=name))])))
+    (DOCS / f"{name}.pdf").unlink(missing_ok=True)
+
+
+@app.get("/jobs", dependencies=[Depends(require_key)])
+def jobs():
+    return list(JOBS.values())
+
+
+@app.get("/jobs/{job_id}", dependencies=[Depends(require_key)])
+def job(job_id: str):
+    if job_id not in JOBS:
+        raise HTTPException(404, "unknown job")
+    return JOBS[job_id]
 
 
 def need_history():

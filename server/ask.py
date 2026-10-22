@@ -92,25 +92,46 @@ def label(c):
     return f"{c['doc']} p.{a}" if a == b else f"{c['doc']} p.{a}-{b}"
 
 
-def answer(question, doc=None, via="cli"):
-    t0 = time.time()
-    fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=os.environ.get("ANSWER_MODEL"))
-    try:
-        found = search(question, doc=doc)
-        ctx = found[:K]
-        context = "\n\n".join(f"[{label(c)}] ({c['type']}) {c['caption']}\n{c['text']}" for c in ctx)
-        r = llm().chat.completions.create(
-            model=os.environ["ANSWER_MODEL"],
-            temperature=0,
-            messages=[
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": f"Excerpts:\n{context}\n\nQuestion: {question}"},
-            ],
-        )
-    except Exception as e:
-        log(**fields, status="error", error=str(e)[:300], seconds=round(time.time() - t0, 2))
-        raise
-    raw = r.choices[0].message.content
+def _prepare(question, doc):
+    """Search, then build the prompt. Returns all candidates, the K sent to the model, and the messages."""
+    found = search(question, doc=doc)
+    ctx = found[:K]
+    context = "\n\n".join(f"[{label(c)}] ({c['type']}) {c['caption']}\n{c['text']}" for c in ctx)
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": f"Excerpts:\n{context}\n\nQuestion: {question}"},
+    ]
+    return found, ctx, messages
+
+
+def _candidates(found):
+    return [
+        {"doc": c["doc"], "pages": c["pages"], "type": c["type"], "caption": c["caption"],
+         "score": round(c["score"], 4), "used": i < K,
+         "snippet": " ".join(c["text"].replace("|", " ").replace("-", " ").split())[:110]}
+        for i, c in enumerate(found)
+    ]
+
+
+def _answer_text(buf):
+    """The text of the "answer" string in a JSON reply that may be cut off, and nothing after a half-written escape."""
+    m = re.search(r'"answer"\s*:\s*"', buf)
+    if not m:
+        return ""
+    i = start = m.end()
+    while i < len(buf) and buf[i] != '"':
+        if buf[i] == "\\":
+            width = 6 if buf[i + 1 : i + 2] == "u" else 2
+            if i + width > len(buf):
+                break  # the escape is not complete yet
+            i += width
+        else:
+            i += 1
+    text = json.loads('"' + buf[start:i] + '"', strict=False)
+    return text[:-1] if text and "\ud800" <= text[-1] <= "\udbff" else text  # wait for the low surrogate
+
+
+def _finish(raw, found, ctx, u, t0, fields):
     try:
         out = json.loads(re.search(r"\{.*\}", raw, re.S).group())
     except (AttributeError, json.JSONDecodeError):
@@ -119,14 +140,9 @@ def answer(question, doc=None, via="cli"):
     out["retrieved_pages"] = sorted({s["page"] for s in out["retrieved_sources"]})
     out["citations"], out["rejected_citations"] = verify_citations(out.get("citations"), out["retrieved_sources"])
     out["retrieved"] = ctx
-    out["candidates"] = [
-        {"doc": c["doc"], "pages": c["pages"], "type": c["type"], "caption": c["caption"],
-         "score": round(c["score"], 4), "used": i < K}
-        for i, c in enumerate(found)
-    ]
+    out["candidates"] = _candidates(found)
     out["score_kind"] = score_kind()
     out["seconds"] = round(time.time() - t0, 2)
-    u = r.usage
     out["tokens"] = u.total_tokens if u else None
     out["prompt_tokens"] = u.prompt_tokens if u else None
     out["completion_tokens"] = u.completion_tokens if u else None
@@ -134,6 +150,45 @@ def answer(question, doc=None, via="cli"):
         completion_tokens=out["completion_tokens"], refused=bool(out.get("refused")),
         citations=len(out["citations"]), rejected=len(out["rejected_citations"]), retrieved=len(ctx))
     return out
+
+
+def answer(question, doc=None, via="cli", model=None):
+    t0 = time.time()
+    model = model or os.environ["ANSWER_MODEL"]
+    fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=model)
+    try:
+        found, ctx, messages = _prepare(question, doc)
+        r = llm().chat.completions.create(model=model, temperature=0, messages=messages)
+    except Exception as e:
+        log(**fields, status="error", error=str(e)[:300], seconds=round(time.time() - t0, 2))
+        raise
+    return _finish(r.choices[0].message.content, found, ctx, r.usage, t0, fields)
+
+
+def answer_stream(question, doc=None, via="cli", model=None):
+    """Like answer(), but yields ("candidates", {...}) once the search is done, ("token", text) as the
+    answer text is written, and last ("done", the same dict that answer() returns)."""
+    t0 = time.time()
+    model = model or os.environ["ANSWER_MODEL"]
+    fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=model)
+    try:
+        found, ctx, messages = _prepare(question, doc)
+        yield "candidates", {"candidates": _candidates(found), "score_kind": score_kind()}
+        stream = llm().chat.completions.create(
+            model=model, temperature=0, messages=messages, stream=True, stream_options={"include_usage": True})
+        raw, sent, usage = "", "", None
+        for ev in stream:
+            usage = ev.usage or usage
+            if ev.choices:
+                raw += ev.choices[0].delta.content or ""
+                text = _answer_text(raw)
+                if len(text) > len(sent):
+                    yield "token", text[len(sent):]
+                    sent = text
+    except Exception as e:
+        log(**fields, status="error", error=str(e)[:300], seconds=round(time.time() - t0, 2))
+        raise
+    yield "done", _finish(raw, found, ctx, usage, t0, fields)
 
 
 if __name__ == "__main__":
