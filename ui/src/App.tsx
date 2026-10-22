@@ -4,7 +4,7 @@ import AnswerCard from "./components/AnswerCard";
 import AskForm from "./components/AskForm";
 import KeyBar from "./components/KeyBar";
 import Sidebar from "./components/Sidebar";
-import type { ConversationSummary, StoredMessage, Turn } from "./types";
+import type { ConversationSummary, Stats, StoredMessage, Turn } from "./types";
 
 const fromStored = (m: StoredMessage, id: number): Turn =>
   m.role === "user"
@@ -27,6 +27,7 @@ export default function App() {
   const [historyOn, setHistoryOn] = useState(false);
   const [docs, setDocs] = useState<string[]>([]);
   const [doc, setDoc] = useState("");
+  const [stats, setStats] = useState<Stats | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -48,6 +49,7 @@ export default function App() {
     try {
       setHistoryOn((await api.health()).history);
       setDocs(await api.documents());
+      setStats(await api.stats());
       setNeedKey(false);
     } catch (e) {
       guard(e);
@@ -127,6 +129,17 @@ export default function App() {
         <p className="sub">
           Ask a question about the reports. Answers cite their pages and decline when the reports don't say.
         </p>
+        {stats && (
+          <p className="stats">
+            Vector database: <strong>{stats.chunks}</strong> chunks
+            {Object.entries(stats.documents).map(([name, n]) => (
+              <span key={name}>
+                {" · "}
+                {name}: {n}
+              </span>
+            ))}
+          </p>
+        )}
         {needKey && <KeyBar onSaved={load} />}
         <div className="thread" aria-live="polite">
           {turns.map((t) => {

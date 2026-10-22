@@ -24,6 +24,25 @@ describe("AnswerCard", () => {
     expect(screen.queryByText("Not in the document")).not.toBeInTheDocument();
   });
 
+  it("lists candidates with scores and marks the ones not sent to the model", () => {
+    const c = { doc: "report", type: "table", caption: "", used: true };
+    render(
+      <AnswerCard
+        data={data({
+          score_kind: "cosine",
+          candidates: [
+            { ...c, pages: [4], score: 0.8123 },
+            { ...c, pages: [7, 8], score: 0.41, used: false },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("2 candidates retrieved · 1 sent to the model")).toBeInTheDocument();
+    expect(screen.getByText("0.812")).toBeInTheDocument();
+    expect(screen.getByText(/report p.7-8 · table \(not sent\)/)).toBeInTheDocument();
+    expect(screen.getByText(/cosine similarity/)).toBeInTheDocument();
+  });
+
   it("marks a refusal", () => {
     render(<AnswerCard data={data({ refused: true, citations: [] })} />);
     expect(screen.getByText("Not in the document")).toBeInTheDocument();

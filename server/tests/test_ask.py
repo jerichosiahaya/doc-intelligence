@@ -46,10 +46,10 @@ def _fake_llm(content):
 
 
 def _patch(monkeypatch, content):
-    chunks = [{"doc": D, "pages": [4], "type": "table", "caption": "Table 1", "text": "| a |"}]
+    chunks = [{"doc": D, "pages": [4], "type": "table", "caption": "Table 1", "score": 0.5, "text": "| a |"}]
     logged = []
     monkeypatch.setenv("ANSWER_MODEL", "m")
-    monkeypatch.setattr(ask, "retrieve", lambda q, k=6, doc=None: chunks)
+    monkeypatch.setattr(ask, "search", lambda q, k=6, doc=None: chunks)
     monkeypatch.setattr(ask, "llm", _fake_llm(content))
     monkeypatch.setattr(ask, "log", lambda **f: logged.append(f))
     return logged
@@ -80,3 +80,14 @@ def test_answer_logs_errors(monkeypatch):
     except RuntimeError:
         pass
     assert logged[0]["status"] == "error" and "proxy down" in logged[0]["error"]
+
+
+def test_answer_reports_candidates_and_which_were_sent(monkeypatch):
+    _patch(monkeypatch, '{"answer": "a", "citations": [], "refused": false}')
+    monkeypatch.setattr(ask, "K", 1)
+    extra = {"doc": D, "pages": [5], "type": "prose", "caption": "", "score": 0.2, "text": "x"}
+    monkeypatch.setattr(ask, "search", lambda q, k=6, doc=None: [
+        {"doc": D, "pages": [4], "type": "table", "caption": "Table 1", "score": 0.5, "text": "| a |"}, extra])
+    out = ask.answer("q")
+    assert [(c["pages"], c["used"]) for c in out["candidates"]] == [([4], True), ([5], False)]
+    assert out["retrieved_pages"] == [4] and out["score_kind"] == "cosine"

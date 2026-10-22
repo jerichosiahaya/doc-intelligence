@@ -1,3 +1,4 @@
+from conftest import REPLY
 import server
 
 SRC = {"doc": "demo", "page": 1}
@@ -70,3 +71,20 @@ def test_page_image(client):
     assert client.get("/page/demo/0.png").status_code == 404
     assert client.get("/page/nope/1.png").status_code == 404
     assert client.get("/page/..%2Fdemo/1.png").status_code == 404
+
+
+def test_stats_counts_chunks_per_document(client, monkeypatch):
+    class Q:
+        def count(self, collection, count_filter=None, exact=True):
+            return type("R", (), {"count": 7 if count_filter is None else 3})()
+
+    monkeypatch.setattr(server, "qdrant", lambda: Q())
+    assert client.get("/stats").json() == {"chunks": 7, "documents": {"demo": 3}}
+
+
+def test_ask_reply_carries_candidates_and_grpc_ignores_them(client, monkeypatch):
+    cand = {"doc": "demo", "pages": [1], "type": "prose", "caption": "", "score": 0.8, "used": True}
+    monkeypatch.setattr(server, "answer", lambda q, doc=None, via="rest": {**REPLY, "candidates": [cand], "score_kind": "cosine"})
+    r = client.post("/ask", json={"question": "q"}).json()
+    assert r["candidates"] == [cand] and r["score_kind"] == "cosine"
+    server.pb.AskReply(**server.ask("q").model_dump(exclude={"candidates", "score_kind"}, mode="python") | {"conversation_id": ""})

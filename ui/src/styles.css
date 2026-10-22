@@ -48,3 +48,15 @@ button.chip[aria-pressed="true"] { background: var(--accent); color: var(--accen
 .err { color: var(--warn-fg); background: var(--warn-bg); }
 .page { margin-top: 1rem; }
 .page img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+
+.stats { margin: -.6rem 0 1.25rem; font-size: .85rem; color: var(--muted); }
+.stats strong { color: var(--fg); }
+.cands { margin-top: .6rem; font-size: .85rem; }
+.cands summary { cursor: pointer; color: var(--muted); }
+.cands ol { list-style: none; margin: .4rem 0 0; padding: 0; display: grid; gap: .35rem; }
+.cands li { display: grid; grid-template-columns: 1fr 5rem 3.2rem; gap: .5rem; align-items: center; }
+.cands li.cut { opacity: .6; }
+.cands .where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cands .track { height: .5rem; border-radius: 99px; background: var(--line); overflow: hidden; }
+.cands .track span { display: block; height: 100%; background: var(--accent); }
+.cands .score { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }

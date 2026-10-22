@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AskResponse, Conversation, ConversationSummary } from "./types";
+import type { AskResponse, Conversation, ConversationSummary, Stats } from "./types";
 
 export const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -19,6 +19,7 @@ export const answer = (over: Partial<AskResponse> = {}): AskResponse => ({
 interface Options {
   history?: boolean;
   docs?: string[];
+  stats?: Stats;
   conversations?: ConversationSummary[];
   conversation?: Conversation;
   ask?: (body: { question: string; doc: string | null; conversation_id: string | null }) => Response | AskResponse;
@@ -47,6 +48,7 @@ export function fakeServer(o: Options = {}) {
 
       if (path === "/health") return json({ ok: true, history: !!o.history });
       if (o.requireKey && headers["X-API-Key"] !== o.requireKey) return json({ detail: "invalid or missing API key" }, 401);
+      if (path === "/stats") return json(o.stats ?? { chunks: 0, documents: {} });
       if (path === "/documents") return json(o.docs ?? []);
       if (path === "/conversations") return json(conversations);
       if (path.startsWith("/conversations/")) {

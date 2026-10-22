@@ -1,4 +1,4 @@
-import type { AskResponse, Conversation, ConversationSummary } from "./types";
+import type { AskResponse, Conversation, ConversationSummary, Stats } from "./types";
 
 // The server is a separate service. In development Vite proxies /api; in Docker nginx does.
 // Set VITE_API_URL at build time to call the server directly (it then needs CORS_ORIGINS).
@@ -53,6 +53,7 @@ const json = async <T>(path: string, init?: RequestInit): Promise<T> => (await r
 
 export const api = {
   health: () => json<{ ok: boolean; history: boolean }>("/health"),
+  stats: () => json<Stats>("/stats"),
   documents: () => json<string[]>("/documents"),
   ask: (body: { question: string; doc: string | null; conversation_id: string | null }) =>
     json<AskResponse>("/ask", {

@@ -20,9 +20,17 @@ Each excerpt starts with a label like [report_name p.4].
 Reply with JSON only: {"answer": str, "citations": [{"doc": str, "page": int}], "refused": bool}"""
 
 
-def retrieve(question, k=K, doc=None):
-    """SEARCH=dense (default) or hybrid (dense + BM25, fused with RRF).
-    RERANK=1 fetches RERANK_N candidates and keeps the k best by a local cross-encoder.
+def score_kind():
+    """What the score of a retrieved chunk means. The scales differ, so compare scores only within one answer."""
+    if os.environ.get("RERANK") == "1":
+        return "rerank"
+    return "rrf" if os.environ.get("SEARCH", "dense") == "hybrid" else "cosine"
+
+
+def search(question, k=K, doc=None):
+    """All candidates the search fetched, best first. Each has a score (see score_kind).
+    SEARCH=dense (default) or hybrid (dense + BM25, fused with RRF).
+    RERANK=1 fetches RERANK_N candidates and re-scores them with a local cross-encoder.
     doc limits the search to one document."""
     rerank = os.environ.get("RERANK") == "1"
     n_out = int(os.environ.get("RERANK_N", 20)) if rerank else k
@@ -47,7 +55,12 @@ def retrieve(question, k=K, doc=None):
         for c, sc in zip(out, scores):
             c["score"] = float(sc)
         out.sort(key=lambda c: -c["score"])
-    return out[:k]
+    return out
+
+
+def retrieve(question, k=K, doc=None):
+    """The k best candidates: the chunks that go to the model."""
+    return search(question, k, doc)[:k]
 
 
 def sources(chunks):
@@ -83,7 +96,8 @@ def answer(question, doc=None, via="cli"):
     t0 = time.time()
     fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=os.environ.get("ANSWER_MODEL"))
     try:
-        ctx = retrieve(question, doc=doc)
+        found = search(question, doc=doc)
+        ctx = found[:K]
         context = "\n\n".join(f"[{label(c)}] ({c['type']}) {c['caption']}\n{c['text']}" for c in ctx)
         r = llm().chat.completions.create(
             model=os.environ["ANSWER_MODEL"],
@@ -105,6 +119,12 @@ def answer(question, doc=None, via="cli"):
     out["retrieved_pages"] = sorted({s["page"] for s in out["retrieved_sources"]})
     out["citations"], out["rejected_citations"] = verify_citations(out.get("citations"), out["retrieved_sources"])
     out["retrieved"] = ctx
+    out["candidates"] = [
+        {"doc": c["doc"], "pages": c["pages"], "type": c["type"], "caption": c["caption"],
+         "score": round(c["score"], 4), "used": i < K}
+        for i, c in enumerate(found)
+    ]
+    out["score_kind"] = score_kind()
     out["seconds"] = round(time.time() - t0, 2)
     u = r.usage
     out["tokens"] = u.total_tokens if u else None

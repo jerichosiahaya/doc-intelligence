@@ -25,6 +25,7 @@ import history
 import docintel_pb2 as pb
 import docintel_pb2_grpc as pb_grpc
 from ask import answer
+from rag import COLLECTION, models, qdrant
 from reqlog import log
 
 DOCS = Path("docs")  # ingest.py keeps a copy of each PDF here
@@ -73,6 +74,15 @@ class AskRequest(BaseModel):
     conversation_id: uuid.UUID | None = None  # continue a saved conversation; omit to start a new one
 
 
+class Candidate(BaseModel):
+    doc: str
+    pages: list[int]
+    type: str
+    caption: str
+    score: float
+    used: bool  # sent to the model (the top K); the rest were fetched but cut
+
+
 class AskReply(BaseModel):
     answer: str
     citations: list[Source]
@@ -82,6 +92,8 @@ class AskReply(BaseModel):
     seconds: float
     tokens: int
     conversation_id: str | None = None  # set when history is on and the turn was saved
+    candidates: list[Candidate] = []  # REST only: every chunk the search fetched, with its relevancy score
+    score_kind: str = ""  # cosine, rrf or rerank: what the scores mean
 
 
 def doc_names():
@@ -105,6 +117,8 @@ def ask(question: str, doc: str | None = None, via: str = "rest", conversation_i
         seconds=a["seconds"],
         tokens=a["tokens"] or 0,
         conversation_id=str(conversation_id) if conversation_id else None,
+        candidates=a.get("candidates", []),
+        score_kind=a.get("score_kind", ""),
     )
     if history.enabled():
         try:  # a failed save must not lose an answer that already cost a model call
@@ -132,7 +146,7 @@ class DocIntel(pb_grpc.DocIntelServicer):
             context.abort(grpc.StatusCode.FAILED_PRECONDITION, "history is not enabled (set DATABASE_URL)")
         except Exception as e:  # LLM proxy or vector store failure
             context.abort(grpc.StatusCode.UNAVAILABLE, f"backend error: {e}")
-        return pb.AskReply(**{**r.model_dump(), "conversation_id": r.conversation_id or ""})
+        return pb.AskReply(**{**r.model_dump(exclude={"candidates", "score_kind"}), "conversation_id": r.conversation_id or ""})
 
 
 MODE = "both"
@@ -178,6 +192,16 @@ def health():
 @app.get("/documents", dependencies=[Depends(require_key)])
 def documents():
     return doc_names()
+
+
+@app.get("/stats", dependencies=[Depends(require_key)])
+def stats():
+    """Chunks in the vector database, in total and per document."""
+    def count(flt=None):
+        return qdrant().count(COLLECTION, count_filter=flt, exact=True).count
+
+    per_doc = {d: count(models.Filter(must=[models.FieldCondition(key="doc", match=models.MatchValue(value=d))])) for d in doc_names()}
+    return {"chunks": count(), "documents": per_doc}
 
 
 @app.post("/ask", response_model=AskReply, dependencies=[Depends(require_key)])

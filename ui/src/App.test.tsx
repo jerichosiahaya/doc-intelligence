@@ -22,6 +22,13 @@ describe("App without history", () => {
     expect(screen.queryByText("History")).not.toBeInTheDocument();
   });
 
+  it("shows how many chunks the vector database holds", async () => {
+    fakeServer({ stats: { chunks: 31, documents: { report: 31 } } });
+    render(<App />);
+    expect(await screen.findByText(/report: 31/)).toBeInTheDocument();
+    expect(screen.getByText("31")).toBeInTheDocument();
+  });
+
   it("asks a question, shows the answer, and clears the box", async () => {
     const { calls } = fakeServer({ docs: ["report"] });
     render(<App />);

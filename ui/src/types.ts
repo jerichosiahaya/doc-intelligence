@@ -3,6 +3,21 @@ export interface Source {
   page: number;
 }
 
+/** One chunk the search fetched. score is relevancy; its scale depends on score_kind. */
+export interface Candidate {
+  doc: string;
+  pages: number[];
+  type: string;
+  caption: string;
+  score: number;
+  used: boolean;
+}
+
+export interface Stats {
+  chunks: number;
+  documents: Record<string, number>;
+}
+
 /** What the UI needs to draw one answer. */
 export interface AnswerData {
   answer: string;
@@ -12,6 +27,9 @@ export interface AnswerData {
   retrieved: Source[];
   seconds: number;
   tokens: number;
+  /** Absent for answers loaded from history: the server does not save them. */
+  candidates?: Candidate[];
+  score_kind?: "cosine" | "rrf" | "rerank" | "";
 }
 
 export interface AskResponse extends AnswerData {
