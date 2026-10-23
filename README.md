@@ -112,6 +112,69 @@ Ingestion also copies the PDF to `server/docs/`. The server uses this copy to sh
 
 ## How the system works
 
+### High-level architecture
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        B["Browser"]
+        C["CLI<br/>ask.py, ingest.py, eval.py"]
+        G["gRPC clients"]
+        A["AI assistants<br/>Claude, opencode, pi"]
+    end
+
+    subgraph UIsvc["UI service (ui/)"]
+        N["nginx<br/>React app + /api proxy"]
+    end
+
+    M["MCP server (mcp-server/)<br/>5 tools, stdio"]
+
+    subgraph SRV["Server service (server/)"]
+        direction TB
+        R["REST API<br/>FastAPI :8000"]
+        P["gRPC API :50051"]
+        CORE["Core<br/>search, rerank, answer,<br/>citation check"]
+        ING["Ingest worker<br/>PyMuPDF, chunking,<br/>number checks"]
+        LM["Local models (CPU)<br/>embeddings, BM25, reranker"]
+        R --> CORE
+        P --> CORE
+        R --> ING
+        CORE --> LM
+        ING --> LM
+    end
+
+    subgraph DATA["Data stores"]
+        Q[("Qdrant<br/>dense + BM25 vectors")]
+        PG[("Postgres<br/>conversation history")]
+        F[["docs/ PDFs<br/>logs/requests.jsonl"]]
+    end
+
+    L["LiteLLM proxy<br/>answer, vision and judge models"]
+
+    B --> N
+    N -->|"/api"| R
+    A --> M
+    M -->|REST| R
+    G --> P
+    C -.->|"same code, no server"| CORE
+    C -.-> ING
+    CORE --> Q
+    ING --> Q
+    R --> PG
+    ING --> F
+    R --> F
+    CORE -->|"answer (streamed)"| L
+    ING -->|"page images"| L
+```
+
+How to read the diagram:
+
+- **Clients** use one of four doors: the web UI, the CLI, gRPC, or an AI assistant through the MCP server. The UI and the MCP server use only the REST API. The CLI imports the same code as the server (dashed lines), so it needs no server, but with embedded Qdrant only one process can open the index at a time.
+- **The server** has two jobs. It answers questions (search, rerank, answer, citation check). It also ingests documents (read, chunk, embed, index). Both jobs use the local models. No document text leaves the machine during search.
+- **The LiteLLM proxy** is the only outside call. It reads page images during ingestion (vision model) and writes the answers (answer model). The judge model is used only by `eval.py`.
+- **The data stores:** Qdrant holds the vectors and the chunk text. The PDFs in `docs/` give the page images. Postgres is optional and holds the history.
+- **Docker Compose** starts four containers: `qdrant`, `postgres`, `server`, and `ui`. The MCP server runs on the machine of the AI assistant.
+
 ### Data flow
 
 ```
