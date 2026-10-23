@@ -12,7 +12,7 @@ from collections import defaultdict
 
 import yaml
 
-from ask import answer, retrieve
+from ask import K, answer, rerank_on, retrieve
 
 RETRIEVAL_ONLY = "--retrieval-only" in sys.argv
 DOC = sys.argv[sys.argv.index("--doc") + 1] if "--doc" in sys.argv else None  # limit to one ingested document
@@ -83,7 +83,7 @@ if __name__ == "__main__":
     by = defaultdict(list)
     for r in rows:
         by[r["type"]].append(r)
-    cfg = " ".join(f"{k}={os.environ.get(k, '-')}" for k in ("SEARCH", "RERANK", "TOP_K"))
+    cfg = f"SEARCH={os.environ.get('SEARCH', 'dense')} RERANK={int(rerank_on())} TOP_K={K} ANSWER_MODEL={os.environ.get('ANSWER_MODEL', '-')}"
     print(f"\n{cfg}\n{'type':<13}{'n':>3}{'retrieval':>11}{'answer':>8}")
     for t, rs in [*by.items(), ("ALL", rows)]:
         print(f"{t:<13}{len(rs):>3}{fmt([r['retrieval_hit'] for r in rs]):>11}"

@@ -13,16 +13,24 @@ K = int(os.environ.get("TOP_K", 6))
 SYSTEM = """You answer questions about company reports using ONLY the numbered excerpts.
 Each excerpt starts with a label like [report_name p.4].
 - Cite every fact as [report_name p.N], using the label of the excerpt that contains it.
-- If the excerpts do not contain the answer, set refused=true and say what is missing. Never guess.
+- If the excerpts do not contain the answer, set the JSON field "refused" to true and, in "answer", say what is missing. Never guess. If the excerpts do contain the answer, "refused" is false. Never write the word "refused" inside the answer text.
 - If excerpts disagree (for example an erratum corrects an earlier statement), say so and cite both.
-- If a rule needs data the reports do not give, say what can and cannot be concluded.
+- If a rule needs data the reports do not give, say what can and cannot be concluded. When a rule has a condition \
+that the data cannot test (for example "two consecutive quarters" when only annual figures exist), say that the rule \
+cannot be applied and name the missing data. You may list items that fail only the part you can test, but do not say \
+that they meet the rule.
+- When you count items, count each distinct item once, and list them.
 - If the question compares several reports, answer from each report and cite each one.
 Reply with JSON only: {"answer": str, "citations": [{"doc": str, "page": int}], "refused": bool}"""
 
 
+def rerank_on():
+    return os.environ.get("RERANK", "1") == "1"  # on by default: it gained 2 of 17 on the retrieval eval
+
+
 def score_kind():
     """What the score of a retrieved chunk means. The scales differ, so compare scores only within one answer."""
-    if os.environ.get("RERANK") == "1":
+    if rerank_on():
         return "rerank"
     return "rrf" if os.environ.get("SEARCH", "dense") == "hybrid" else "cosine"
 
@@ -30,9 +38,9 @@ def score_kind():
 def search(question, k=K, doc=None):
     """All candidates the search fetched, best first. Each has a score (see score_kind).
     SEARCH=dense (default) or hybrid (dense + BM25, fused with RRF).
-    RERANK=1 fetches RERANK_N candidates and re-scores them with a local cross-encoder.
+    RERANK=1 (the default) fetches RERANK_N candidates and re-scores them with a local cross-encoder.
     doc limits the search to one document."""
-    rerank = os.environ.get("RERANK") == "1"
+    rerank = rerank_on()
     n_out = int(os.environ.get("RERANK_N", 20)) if rerank else k
     flt = models.Filter(must=[models.FieldCondition(key="doc", match=models.MatchValue(value=doc))]) if doc else None
     dense = embed([question])[0]

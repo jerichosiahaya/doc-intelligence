@@ -83,6 +83,7 @@ def test_answer_logs_errors(monkeypatch):
 
 
 def test_answer_reports_candidates_and_which_were_sent(monkeypatch):
+    monkeypatch.setenv("RERANK", "0")
     _patch(monkeypatch, '{"answer": "a", "citations": [], "refused": false}')
     monkeypatch.setattr(ask, "K", 1)
     extra = {"doc": D, "pages": [5], "type": "prose", "caption": "", "score": 0.2, "text": "x"}
