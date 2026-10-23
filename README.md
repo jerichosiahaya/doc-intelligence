@@ -14,15 +14,15 @@ The sample document is the fictional "Kirana Logistics Group Annual Report 2025"
 
 ## Screenshots
 
-**Web UI.** The page after start-up, with conversation history turned on and no question asked yet.
+**Web UI.** A real answer. The question was "How many electric trucks were added in 2025?" The CEO letter says 96 and the errata says 82. The answer gives 82 and names both. The six source cards are the chunks that the model read. The cited ones have an accent border. The numbers in the answer text open the sources. The line "20 candidates retrieved · 6 sent to the model" opens the relevancy scores.
 
 ![Web UI](assets/ui.png)
 
-**CLI.** Real output of `ingest.py` and `eval.py --retrieval-only`, rendered as an image. The run used no vision pass, so the chart, tile, and scan questions fail by design.
+**CLI.** Real output of `ask.py` (an answer, and a refusal) and of `eval.py --retrieval-only`, rendered as an image.
 
 ![CLI output](assets/cli.png)
 
-> **Note:** These images show no answers, because answers need a model API. Take new screenshots of answers after you fill in `.env`.
+**Customer summary (one page, for a business owner):** [CUSTOMER_SUMMARY.md](CUSTOMER_SUMMARY.md)
 
 ## Contents
 
@@ -130,6 +130,100 @@ PDF ──► ingest.py ──► chunks ──► embeddings ──► Qdrant
    { answer, citations, rejected_citations, refused, retrieved }
 ```
 
+### Tech stack
+
+| Area | Technology | Why this one |
+|---|---|---|
+| Language (server, CLI, MCP server) | Python 3.12 or newer | The document and model libraries are in Python. |
+| PDF reading | PyMuPDF | Native text, native tables, and page images in one library. |
+| Vision pass | A vision model through LiteLLM (`VISION_MODEL`) | Reads charts, tiles, diagrams, and scans. |
+| Embeddings | `BAAI/bge-small-en-v1.5` (fastembed, local, 384 dimensions) | No second API key. Runs on a CPU. |
+| Keyword search | BM25 (`Qdrant/bm25`, fastembed) | Optional hybrid search. |
+| Reranker | `Xenova/ms-marco-MiniLM-L-12-v2` cross-encoder (fastembed, local) | Gained 2 of 17 questions in the evaluation. On by default. |
+| Vector database | Qdrant (embedded, or a server through `QDRANT_URL`) | Dense and sparse vectors in one collection. |
+| Answer and judge models | LiteLLM proxy, called with the `openai` SDK | One interface for many models. The UI lists them. |
+| REST API | FastAPI, Uvicorn | Server-sent events for streaming, file upload. |
+| gRPC API | grpcio, protobuf | Typed contract for other services. |
+| History | Postgres 16 (psycopg 3) | Optional. Turned on by `DATABASE_URL`. |
+| Web UI | React 19, TypeScript, Vite | No UI library and no state library. |
+| UI web server | nginx | Serves the build and forwards `/api`. |
+| MCP server | MCP Python SDK, httpx | Thin client of the REST API. |
+| Tests | pytest; Vitest and Testing Library | 53 server tests, 33 UI tests, 23 MCP tests. |
+| Packaging and CI | Docker Compose; GitHub Actions | Four services. Three CI jobs. |
+
+### Sequence diagrams
+
+**Ask a question** (the web UI, which streams the answer):
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Web UI (React)
+    participant API as Server (FastAPI)
+    participant Emb as Local models<br/>(embed, rerank)
+    participant Q as Qdrant
+    participant LLM as LiteLLM proxy
+    participant PG as Postgres
+
+    User->>UI: Type a question, press Enter
+    UI->>API: POST /api/ask/stream (question, doc, model)
+    API->>API: Check the key, the document, the model
+    API->>Emb: Embed the question
+    API->>Q: Search (top 20 candidates)
+    Q-->>API: Candidate chunks
+    API->>Emb: Rerank the candidates, keep the best 6
+    API-->>UI: event: candidates (pages and relevancy scores)
+    UI-->>User: Show the source cards
+    API->>LLM: Chat request (6 excerpts + question), stream=true
+    loop For each piece of text
+        LLM-->>API: Token
+        API-->>UI: event: token
+        UI-->>User: Add the text to the answer
+    end
+    API->>API: Parse the JSON, check that each cited page was retrieved
+    opt History is on
+        API->>PG: Save the question and the answer
+    end
+    API-->>UI: event: done (answer, citations, tokens)
+    UI-->>User: Final answer with citation chips
+    User->>UI: Select a source card
+    UI->>API: GET /api/page/{doc}/{page}.png
+    API-->>UI: Page image
+```
+
+**Add a document:**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Web UI
+    participant API as Server
+    participant W as Ingest worker<br/>(one at a time)
+    participant LLM as LiteLLM proxy
+    participant Emb as Local models
+    participant Q as Qdrant
+
+    User->>UI: Choose a PDF
+    UI->>API: POST /api/documents (multipart)
+    API->>API: Check size, PDF header, page count
+    API-->>UI: 202 and a job
+    API->>W: Queue the job
+    loop For each page
+        W->>W: Read text and tables (PyMuPDF)
+        W->>LLM: Page image, ask for a transcript
+        LLM-->>W: Transcript
+    end
+    W->>W: Cut into chunks, check the numbers
+    W->>Emb: Embed the chunks (dense and BM25)
+    W->>Q: Replace the chunks of this document
+    loop Until the job is done
+        UI->>API: GET /api/jobs
+        API-->>UI: Page n of N, then done
+    end
+    UI->>API: GET /api/stats
+    API-->>UI: New chunk counts
+```
+
 ### Ingestion
 
 The ingestion step reads each page in three ways.
@@ -165,14 +259,15 @@ A warning does not stop ingestion. It tells you where to look in `chunks.jsonl`.
 ### Retrieval
 
 1. The system embeds the question with the local model `BAAI/bge-small-en-v1.5`.
-2. Qdrant returns the `TOP_K` chunks with the highest cosine similarity. The default is 6.
+2. Qdrant returns the chunks with the highest cosine similarity. With the reranker on (the default), this is 20 chunks. Without it, it is `TOP_K` chunks.
+3. The reranker keeps the best `TOP_K` chunks. The default is 6.
 
-Two options change this step. Both are off by default:
+Two options change this step:
 
 | Option | Setting | What it does |
 |---|---|---|
-| Hybrid search | `SEARCH=hybrid` | Searches with the dense vector and with BM25 keywords. Reciprocal rank fusion (RRF) joins the two result lists. |
-| Reranker | `RERANK=1` | Fetches `RERANK_N` chunks (default 20). A local cross-encoder scores each chunk against the question. The system keeps the best `TOP_K`. |
+| Hybrid search (off by default) | `SEARCH=hybrid` | Searches with the dense vector and with BM25 keywords. Reciprocal rank fusion (RRF) joins the two result lists. |
+| Reranker (**on by default**) | `RERANK=1` (set `RERANK=0` to turn it off) | Fetches `RERANK_N` chunks (default 20). A local cross-encoder scores each chunk against the question. The system keeps the best `TOP_K`. |
 
 Both options run on the local machine and need no API key. See [Evaluation](#evaluation) for the evidence about them.
 
@@ -524,7 +619,7 @@ Set these values in `server/.env`. Do not commit this file. The file `.gitignore
 | `JUDGE_MODEL` | For `eval.py` | | Model that grades answers. Use a different model from `ANSWER_MODEL` if possible. |
 | `TOP_K` | No | 6 | Number of chunks sent to the answer model |
 | `SEARCH` | No | `dense` | `dense` or `hybrid` |
-| `RERANK` | No | off | Set to `1` to turn on the reranker |
+| `RERANK` | No | `1` (on) | Set to `0` to turn off the reranker |
 | `RERANK_N` | No | 20 | Number of candidates that the reranker scores |
 | `RERANK_MODEL` | No | `Xenova/ms-marco-MiniLM-L-12-v2` | Local cross-encoder. Other supported models include `BAAI/bge-reranker-base`. |
 | `QDRANT_URL` | No | | URL of a Qdrant server. If not set, the system uses a local folder (`server/qdrant_data/`). |
@@ -624,32 +719,65 @@ The script prints a table by content type and writes every result to `results.js
 
 When you use `--doc`, make sure the evaluation questions apply to that document. When you ingest several documents, a run without `--doc` searches all of them.
 
-### Preliminary retrieval comparison
+### Retrieval comparison on the full index
 
-This comparison used the report **without the vision pass** (18 chunks, no model API). It tests only questions that native text and tables can answer. The chart, tile, and scan questions cannot pass in this setup, by design.
+This run used the full index (text, tables, and the vision pass) and `python eval.py --retrieval-only`. It needs no answer model. The 17 answerable questions count.
 
-| Configuration | Retrieval passes (of 17 answerable questions) | Prose | Table | Table with calculation |
-|---|---|---|---|---|
-| Dense search | 8 | 1 of 2 | 3 of 3 | 2 of 2 |
-| Hybrid search | 9 | 2 of 2 | 3 of 3 | 2 of 2 |
-| Dense search with reranker | 9 | 2 of 2 | 3 of 3 | 2 of 2 |
-| Hybrid search with reranker | 9 | 2 of 2 | 3 of 3 | 2 of 2 |
+| Configuration | Retrieval passes (of 17) | Questions that failed |
+|---|---|---|
+| Dense search (the first default) | 15 | 14 (conflict), 19 (partial) |
+| Hybrid search | 16 | 19 |
+| Dense search with reranker | **17** | none |
+| Hybrid search with reranker | **17** | none |
 
-Each option fixed the same one question (the cause of the fourth-quarter service dip, where the keyword "flood" matters). The evidence is **weak**: it is one question, on a small index with no vision data. For this reason, hybrid search and the reranker stay **off by default**. Repeat the comparison on the full index (with vision data) and turn an option on only if it shows a clear gain.
+The reranker fixes both failures. Hybrid search adds nothing on top of it. For this reason the reranker is **on** by default, and hybrid search stays **off**. A first test on an index without vision data (18 chunks) pointed the same way, but with a gain on one question only. The result here is still based on 17 questions. Treat it as a good sign, not as proof.
 
 ### Results
 
-**The full evaluation (with vision and answer quality) has not been run yet.** Do not treat any number as a result until `python eval.py` has produced it. After the first run, record here:
+All numbers come from `python eval.py` on the Kirana report (31 chunks from 13 pages). The judge is `anthropic/claude-haiku-4.5`. The answer model is shown in each row.
 
-- the retrieval and answer scores for each content type,
-- every failed question, with the cause of the failure,
-- the change that was made to fix the weakest part, and the scores before and after.
+**Final configuration** (reranker on, `azure_ai/gpt-5.4-mini`, `TOP_K=6`):
+
+| Content type | Questions | Retrieval | Answer |
+|---|---|---|---|
+| Prose | 2 | 2 of 2 | 2 of 2 |
+| Table | 3 | 3 of 3 | 3 of 3 |
+| Table with a calculation | 2 | 2 of 2 | 2 of 2 |
+| Chart | 3 | 3 of 3 | 3 of 3 |
+| Diagram | 2 | 2 of 2 | 2 of 2 |
+| Summary tile | 1 | 1 of 1 | 1 of 1 |
+| Conflict (CEO letter and errata) | 1 | 1 of 1 | 1 of 1 |
+| Scanned page | 2 | 2 of 2 | 2 of 2 |
+| Cannot be answered | 2 | not applicable | 2 of 2 |
+| Rule that needs missing data | 1 | 1 of 1 | 1 of 1 |
+| **All** | **19** | **17 of 17** | **19 of 19** |
+
+**How the score changed.** Each row is one full run of the 19 questions.
+
+| Run | Retrieval | Answers | What failed |
+|---|---|---|---|
+| 1. First run: dense search, `gpt-4.1-mini` | 15 of 17 | 17 of 19 | Q7, Q14 (retrieval only), Q19 |
+| 2. Reranker on, prompt rules added, `gpt-4.1-mini` | 17 of 17 | 17 of 19 | Q7, Q19 |
+| 3. Same, with `anthropic/claude-sonnet-4.6` | 17 of 17 | 19 of 19 | none |
+| 4. Same, with `azure_ai/gpt-5.4-mini` | 17 of 17 | 19 of 19 | none |
+
+Time for one answer call was 3.5 s (`gpt-4.1-mini`), 3.7 s (`claude-sonnet-4.6`), and 3.9 s (`gpt-5.4-mini`). All three used about 2,500 tokens for each question.
+
+**The failures, and their causes.**
+
+- **Q7, "How many cold-chain facilities are listed?"** (expected 6). `gpt-4.1-mini` answered 7, then 8. It counted Cibitung twice (once from the table and once from the text about full capacity). The cause is the answer model. A prompt rule ("count each distinct item once, and list them") did not fix it for this model. The two stronger models answer 6.
+- **Q14, "How many electric trucks were added in 2025?"** The CEO letter says 96. The errata says 82. In run 1 the search did not return the page of the CEO letter (retrieval failed), but the answer was still right. The reranker fixed the retrieval. This case shows that the retrieval check and the answer check can disagree.
+- **Q19, "Which facilities are on the consolidation watch list?"** The rule needs two consecutive quarters below 65%, but the report gives only annual utilisation. `gpt-4.1-mini` named Hat Yai (and, in run 2, Da Nang) as on the list. The expected answer is "cannot be determined". Run 1 also failed retrieval. The reranker fixed that. A prompt rule (say that the rule cannot be applied, and name the missing data) and a stronger model fixed the answer.
+
+**A problem that the evaluation did not catch.** With `gpt-5.4-mini`, the answer text started with the words "refused=true;" even when the answer was correct. The cause was the wording of the prompt, which the model copied. The judge only reads the meaning, so it passed these answers. The prompt now says to set the JSON field and never to write the word in the answer. The evaluation does not check the `refused` field. That check is a next step.
 
 ### Notes on the question set
 
+- **The scores are not a held-out test.** The prompt rules for Q7 and Q19 were written after those questions failed, and the same questions measure them. The 19 of 19 shows that the known failures are fixed. It does not show the same rate on new questions.
+- One person wrote all 19 questions. The set is small. A second reviewer has not added questions yet. Ask a second person to write 5 to 10 questions without seeing this set, and run them once.
 - The expected answers for questions 4 and 5 are calculations. Check them again by hand.
 - The judge is a language model. It can make mistakes. Read `results.json` for the failed questions.
-- One person wrote all 19 questions. The set is small. A pass rate on this set does not prove the same rate on other reports. A second reviewer has not yet added questions.
+- The pipeline was tested on one report. Run it on a second, different PDF before you trust it in general.
 
 ## Tests and continuous integration
 
@@ -703,7 +831,8 @@ The workflow `.github/workflows/ci.yml` has three jobs for each push and pull re
 | Use PyMuPDF for tables as well as vision | Native table text is exact. It gives a second source to compare with the vision text. | Tables without ruled lines may not be found. |
 | Keep each table in one chunk | A split table loses its header. Answers then use the wrong column. | Large tables make large chunks. |
 | Join tables that continue on the next page | Table 2 (facilities) spans pages 7 and 8. | The rule needs the header row to repeat. |
-| Keep hybrid search and the reranker off by default | The first test shows a small gain on one question only. | A possible quality gain is not used until the full test. |
+| Reranker on, hybrid search off, by default | On the full index the reranker gained 2 of 17 questions (15 to 17). Hybrid search gained 1, and added nothing on top of the reranker. | The reranker needs a model download and some CPU time for each question (not measured separately). The set is small. |
+| Default answer model `azure_ai/gpt-5.4-mini` | It answered 19 of 19 questions. `gpt-4.1-mini` answered 17 of 19. Latency was the same (about 4 seconds). | Cost is not compared. The question set is small, and the prompt was tuned on it. |
 | Make the UI a separate service (React, TypeScript, Vite) that uses only the REST API | The UI and the server can change, deploy, and scale on their own. The REST API is the contract between them. | Two images and two build steps. The UI cannot call the CLI or gRPC. |
 | Forward `/api` through the UI's own web server (nginx or Vite) | The browser sees one host, so no CORS and no cross-site rules. | The UI image must know where the server is (`API_UPSTREAM`). |
 | Make the MCP server a thin client of the REST API | It never touches the index (embedded Qdrant allows one process). It works with a local or a Docker server. The REST API stays the only contract. | The server service must be running. One more hop for each call. |
@@ -725,7 +854,7 @@ The workflow `.github/workflows/ci.yml` has three jobs for each push and pull re
 - **One process for embedded Qdrant.** With embedded Qdrant, do not run `server.py`, `ask.py`, `ingest.py`, and `eval.py` at the same time. Use a Qdrant server (see [Run the interfaces as separate processes](#run-the-interfaces-as-separate-processes)).
 - **Simple security.** Authentication is one shared key per deployment. The REST and gRPC interfaces have no encryption (TLS). Put a reverse proxy with TLS in front of them on any network that is not trusted.
 - **Shared top-k across documents.** A question about several documents uses one top-k list. One document can fill the list and hide another. The answer can then miss a document.
-- **Rules that need missing data.** The model must say what the report does not state. For example, the report gives only annual utilisation, but its watch-list rule uses quarterly values. Question 19 tests this case. The model can still fail it.
+- **Rules that need missing data.** The model must say what the report does not state. For example, the report gives only annual utilisation, but its watch-list rule uses quarterly values. Question 19 tests this case. `gpt-4.1-mini` fails it. The default model passes it. A weaker model can fail it again.
 - **History is stored but not used.** The model does not see earlier turns. A follow-up such as "And in 2023?" does not know the earlier question. A query rewrite that uses the history is not built.
 - **No users.** Every client with a valid key sees all conversations. There is no per-user separation.
 - **History is a server feature.** The CLI does not save history.
@@ -733,14 +862,16 @@ The workflow `.github/workflows/ci.yml` has three jobs for each push and pull re
 - **UI tests use a fake server.** A change to the REST API that the fake does not copy can pass the UI tests and still break the page.
 - **Cost is an estimate.** Cost comes from the token counts that the proxy reports and from the prices that you set. If the proxy does not report tokens, the report shows zero.
 - **Few documents tested.** The pipeline was tested on one report. Other layouts (for example, scanned pages with no text layer, or tables without lines) are not tested.
-- **Not yet verified end to end.** The vision pass, the answer step, and the judge were not run with a real model in this repository state. Only the code paths that need no model API were run.
+- **Small, tuned evaluation.** The pass rate comes from 19 questions that one person wrote, and the prompt was tuned on them. See [Notes on the question set](#notes-on-the-question-set).
+- **Candidates are not saved.** A conversation that you reopen shows the pages of each answer, but not the candidate list and relevancy scores.
+- **Uploads are slow and sequential.** A vision model reads every page, one page at a time. A 13-page report takes about two minutes. Uploads run one after the other.
 
 ## Roadmap status
 
 | Item | Status |
 |---|---|
-| Hybrid search | Built. Off by default until the full-index evaluation. |
-| Local reranker | Built. Off by default until the full-index evaluation. |
+| Hybrid search | Built. Off by default: on the full index it gained 1 question, and nothing on top of the reranker. |
+| Local reranker | Built. **On by default**: it gained 2 of 17 questions on the full index. |
 | Citation check | Done |
 | Cross-check of numbers | Partly done: totals and table-against-vision. Chart-against-total is not built. |
 | Cited page image in the web UI | Done |
@@ -751,15 +882,17 @@ The workflow `.github/workflows/ci.yml` has three jobs for each push and pull re
 | Conversation history in Postgres | Done: save, list, reopen, delete. History is not used as model context. |
 | Qdrant server and separate processes | Done (`docker-compose.yml`, `server.py rest\|grpc`) |
 | More evaluation questions from a second reviewer | Not done. This needs a person. |
-| Automated tests and continuous integration | Tests done. The CI workflow has not run yet. |
+| Automated tests and continuous integration | Done. The CI workflow runs the server, UI, and MCP tests. |
+| Streaming answers, model list, document upload and removal in the UI | Done |
+| Full evaluation with real models | Done: 19 of 19 answers, 17 of 17 retrieval (see [Results](#results)) |
 
 ### Next steps
 
-1. Run `python ingest.py` and `python eval.py` with the real models. Record the results above.
-2. Repeat the retrieval comparison with the vision data. Keep hybrid search or the reranker only if the results improve.
+1. Ask a second reviewer for more evaluation questions, and run the pipeline on a second PDF.
+2. Add a check of the `refused` field to the evaluation.
 3. Add a chart-against-total check.
-4. Ask a second reviewer for more evaluation questions.
-5. Use the history as context: rewrite a follow-up question into a full question before the search.
+4. Use the history as context: rewrite a follow-up question into a full question before the search.
+5. Read the pages of an upload in parallel (for example, four at a time), to cut the time of an upload.
 6. Add users (so that each person sees only their own conversations), TLS (through a proxy), a rate limit, and a retention rule for `logs/` and for the history.
 
 ## How AI tools were used
@@ -769,6 +902,8 @@ The author used Claude Code (an AI coding assistant) to plan the design, write t
 ## Repository files
 
 ```
+CUSTOMER_SUMMARY.md          One-page summary for a business owner
+assets/                      Screenshots for this README
 server/                      The server service (Python)
   ingest.py                  Reads a PDF, makes chunks, runs number checks, and fills the index
   ask.py                     Finds chunks, gets an answer, checks citations. Also the CLI.
