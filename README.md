@@ -680,7 +680,7 @@ ANSWER_MODEL=deepseek-flash
 JUDGE_MODEL=deepseek-v4-pro
 ```
 
-The vision pass needs a model that accepts images. The DeepSeek API documentation does not state image input. If your DeepSeek model does not accept images, send the vision pass to another provider with `VISION_BASE_URL`, `VISION_API_KEY`, and `VISION_MODEL`. For a local vision model, use Ollama (`VISION_BASE_URL=http://localhost:11434/v1`). You can also ingest with `--no-vision`, but charts, tiles, and scans are then not read.
+The vision pass needs a model that accepts images. The DeepSeek API documentation does not state image input, but in a test `deepseek-flash` read the title of a page image, and a full run (ingest, answers, and judge) worked with all roles on DeepSeek (run 5 in [Results](#results)). `deepseek-v4-pro` returned an empty reply in the same image test, so use `deepseek-flash` for vision. If your model does not accept images, send the vision pass to another provider with `VISION_BASE_URL`, `VISION_API_KEY`, and `VISION_MODEL`. For a local vision model, use Ollama (`VISION_BASE_URL=http://localhost:11434/v1`). You can also ingest with `--no-vision`, but charts, tiles, and scans are then not read.
 
 The answer step streams with `stream_options`. A provider that rejects this option still works: the system retries without it, and the token count is then zero. **Evaluate again after you change the answer model.** The scores in [Results](#results) belong to the models that are named there.
 
@@ -841,8 +841,11 @@ All numbers come from `python eval.py` on the Kirana report (31 chunks from 13 p
 | 2. Reranker on, prompt rules added, `gpt-4.1-mini` | 17 of 17 | 17 of 19 | Q7, Q19 |
 | 3. Same, with `anthropic/claude-sonnet-4.6` | 17 of 17 | 19 of 19 | none |
 | 4. Same, with `azure_ai/gpt-5.4-mini` | 17 of 17 | 19 of 19 | none |
+| 5. All three roles on DeepSeek (`deepseek-flash` reads pages and answers, `deepseek-v4-pro` judges) | 16 of 17 | 19 of 19 | Q19 retrieval check only |
 
-Time for one answer call was 3.5 s (`gpt-4.1-mini`), 3.7 s (`claude-sonnet-4.6`), and 3.9 s (`gpt-5.4-mini`). All three used about 2,500 tokens for each question.
+Time for one answer call was 3.5 s (`gpt-4.1-mini`), 3.7 s (`claude-sonnet-4.6`), 3.9 s (`gpt-5.4-mini`), and 4.0 s (`deepseek-flash`). All four used about 2,500 to 2,650 tokens for each question.
+
+Run 5 changed the vision model too, so the index has new page transcripts. It also used a different judge, so compare it to the other runs with care. In Q19 the answer was right, but the retrieved text did not contain all evidence strings. The vision transcript words differ a little between models, and the retrieval check is strict.
 
 **The failures, and their causes.**
 
