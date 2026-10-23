@@ -42,7 +42,7 @@ def _fake_llm(content):
     usage = SimpleNamespace(total_tokens=30, prompt_tokens=20, completion_tokens=10)
     resp = SimpleNamespace(usage=usage, choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
     create = lambda **kw: resp
-    return lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    return lambda *role: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
 
 def _patch(monkeypatch, content):
@@ -74,7 +74,7 @@ def test_answer_survives_non_json_reply(monkeypatch):
 
 def test_answer_logs_errors(monkeypatch):
     logged = _patch(monkeypatch, "{}")
-    monkeypatch.setattr(ask, "llm", lambda: (_ for _ in ()).throw(RuntimeError("proxy down")))
+    monkeypatch.setattr(ask, "llm", lambda *role: (_ for _ in ()).throw(RuntimeError("proxy down")))
     try:
         ask.answer("q?")
     except RuntimeError:
@@ -118,9 +118,29 @@ def test_answer_stream_yields_candidates_tokens_and_the_final_dict(monkeypatch):
         seen.update(kw)
         return iter(events)
 
-    monkeypatch.setattr(ask, "llm", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    monkeypatch.setattr(ask, "llm", lambda *role: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
     out = list(ask.answer_stream("q", model="other"))
     assert out[0][0] == "candidates" and out[-1][0] == "done"
     assert "".join(t for k, t in out if k == "token") == "Net profit was 5."
     assert out[-1][1]["tokens"] == 30 and out[-1][1]["citations"] == [{"doc": D, "page": 4}]
     assert seen["model"] == "other" and seen["stream"] is True
+
+
+def test_stream_falls_back_when_the_provider_rejects_stream_options(monkeypatch):
+    from openai import BadRequestError
+
+    _patch(monkeypatch, "")
+    body = json.dumps({"answer": "Five.", "citations": [], "refused": False})
+    events = [SimpleNamespace(usage=None, choices=[SimpleNamespace(delta=SimpleNamespace(content=body))])]
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        if "stream_options" in kw:
+            raise BadRequestError("unknown parameter", response=SimpleNamespace(status_code=400, headers={}, request=None), body=None)
+        return iter(events)
+
+    monkeypatch.setattr(ask, "llm", lambda *role: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    out = list(ask.answer_stream("q"))
+    assert out[-1][1]["answer"] == "Five." and out[-1][1]["tokens"] is None  # no usage from this provider
+    assert ["stream_options" in c for c in calls] == [True, False]

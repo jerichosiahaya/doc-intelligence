@@ -38,7 +38,7 @@ def vision(png: bytes) -> str:
         return f.read_text()
     img = "data:image/png;base64," + base64.b64encode(png).decode()
     t0 = time.time()
-    r = llm().chat.completions.create(
+    r = llm("vision").chat.completions.create(
         model=model,
         temperature=0,
         messages=[{"role": "user", "content": [

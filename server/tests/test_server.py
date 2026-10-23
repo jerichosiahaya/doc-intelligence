@@ -97,7 +97,7 @@ def test_ask_reply_carries_candidates_and_grpc_ignores_them(client, monkeypatch)
 
 def _models(monkeypatch, ids=("m1", "m2")):
     fake = type("L", (), {"models": type("M", (), {"list": lambda self: [type("X", (), {"id": i})() for i in ids]})()})
-    monkeypatch.setattr(server, "llm", lambda: fake)
+    monkeypatch.setattr(server, "llm", lambda *role: fake)
     monkeypatch.setattr(server, "_models", (0.0, []))
 
 
@@ -215,3 +215,22 @@ def test_delete_removes_chunks_and_pdf_and_refuses_unknown_or_busy(client, monke
     assert client.delete("/documents/nope").status_code == 404
     assert client.delete("/documents/demo").status_code == 204
     assert len(calls) == 1 and client.get("/documents").json() == []
+
+
+def test_models_falls_back_to_the_default_when_the_provider_has_no_list(client, monkeypatch):
+    def boom():
+        raise RuntimeError("404")
+
+    fake = type("L", (), {"models": type("M", (), {"list": lambda self: boom()})()})
+    monkeypatch.setattr(server, "llm", lambda *role: fake)
+    monkeypatch.setattr(server, "_models", (0.0, []))
+    monkeypatch.setenv("ANSWER_MODEL", "deepseek-flash")
+    monkeypatch.delenv("ANSWER_MODELS", raising=False)
+    assert client.get("/models").json() == {"default": "deepseek-flash", "models": ["deepseek-flash"]}
+
+
+def test_answer_models_setting_replaces_the_provider_list(client, monkeypatch):
+    monkeypatch.setattr(server, "llm", lambda *role: (_ for _ in ()).throw(AssertionError("must not be called")))
+    monkeypatch.setattr(server, "_models", (0.0, []))
+    monkeypatch.setenv("ANSWER_MODELS", "a, b")
+    assert client.get("/models").json()["models"] == ["a", "b"]

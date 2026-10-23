@@ -24,7 +24,7 @@ states the same key facts (wording and extra detail do not matter). Reply JSON: 
 def judge(q, expected, got):
     from rag import llm
 
-    r = llm().chat.completions.create(
+    r = llm("judge").chat.completions.create(
         model=os.environ["JUDGE_MODEL"],
         temperature=0,
         messages=[

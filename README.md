@@ -47,8 +47,8 @@ The sample document is the fictional "Kirana Logistics Group Annual Report 2025"
 
 - Python 3 (for the server). The project was tested with Python 3.14 only.
 - Node 22 or later (for the UI, if you do not use Docker).
-- A LiteLLM proxy (or any OpenAI-compatible API) with these models:
-  - a vision model that accepts images,
+- An OpenAI-compatible model API. Examples: DeepSeek, OpenAI, OpenRouter, a LiteLLM proxy, Ollama, vLLM. You need:
+  - a vision model that accepts images (the vision pass can use a different provider from the answers),
   - a text model for answers,
   - a text model for grading (can be the same model as the answer model).
 - Internet access for the first run. The local embedding models download once.
@@ -149,7 +149,7 @@ flowchart LR
         F[["docs/ PDFs<br/>logs/requests.jsonl"]]
     end
 
-    L["LiteLLM proxy<br/>answer, vision and judge models"]
+    L["LLM provider (OpenAI-compatible API)<br/>DeepSeek, OpenAI, LiteLLM, Ollama, ...<br/>answer, vision and judge models"]
 
     B --> N
     N -->|"/api"| R
@@ -171,7 +171,7 @@ How to read the diagram:
 
 - **Clients** use one of four doors: the web UI, the CLI, gRPC, or an AI assistant through the MCP server. The UI and the MCP server use only the REST API. The CLI imports the same code as the server (dashed lines), so it needs no server, but with embedded Qdrant only one process can open the index at a time.
 - **The server** has two jobs. It answers questions (search, rerank, answer, citation check). It also ingests documents (read, chunk, embed, index). Both jobs use the local models. No document text leaves the machine during search.
-- **The LiteLLM proxy** is the only outside call. It reads page images during ingestion (vision model) and writes the answers (answer model). The judge model is used only by `eval.py`.
+- **The LLM provider** is the only outside call. Each role (answer, vision, judge) can use its own provider. It reads page images during ingestion (vision model) and writes the answers (answer model). The judge model is used only by `eval.py`.
 - **The data stores:** Qdrant holds the vectors and the chunk text. The PDFs in `docs/` give the page images. Postgres is optional and holds the history.
 - **Docker Compose** starts four containers: `qdrant`, `postgres`, `server`, and `ui`. The MCP server runs on the machine of the AI assistant.
 
@@ -183,7 +183,7 @@ PDF ──► ingest.py ──► chunks ──► embeddings ──► Qdrant
  question ──► embed ──► search (+ rerank) ◄───────┘
                               │
                               ▼
-                  answer model (LiteLLM)
+                  answer model (any provider)
                               │
                               ▼
                  check the cited pages against
@@ -199,12 +199,12 @@ PDF ──► ingest.py ──► chunks ──► embeddings ──► Qdrant
 |---|---|---|
 | Language (server, CLI, MCP server) | Python 3.12 or newer | The document and model libraries are in Python. |
 | PDF reading | PyMuPDF | Native text, native tables, and page images in one library. |
-| Vision pass | A vision model through LiteLLM (`VISION_MODEL`) | Reads charts, tiles, diagrams, and scans. |
+| Vision pass | A vision model through an OpenAI-compatible API (`VISION_MODEL`) | Reads charts, tiles, diagrams, and scans. |
 | Embeddings | `BAAI/bge-small-en-v1.5` (fastembed, local, 384 dimensions) | No second API key. Runs on a CPU. |
 | Keyword search | BM25 (`Qdrant/bm25`, fastembed) | Optional hybrid search. |
 | Reranker | `Xenova/ms-marco-MiniLM-L-12-v2` cross-encoder (fastembed, local) | Gained 2 of 17 questions in the evaluation. On by default. |
 | Vector database | Qdrant (embedded, or a server through `QDRANT_URL`) | Dense and sparse vectors in one collection. |
-| Answer and judge models | LiteLLM proxy, called with the `openai` SDK | One interface for many models. The UI lists them. |
+| Answer and judge models | Any OpenAI-compatible API (DeepSeek, OpenAI, LiteLLM, Ollama, ...), called with the `openai` SDK | One interface for many providers. The UI lists the models when the provider has a model list. |
 | REST API | FastAPI, Uvicorn | Server-sent events for streaming, file upload. |
 | gRPC API | grpcio, protobuf | Typed contract for other services. |
 | History | Postgres 16 (psycopg 3) | Optional. Turned on by `DATABASE_URL`. |
@@ -225,7 +225,7 @@ sequenceDiagram
     participant API as Server (FastAPI)
     participant Emb as Local models<br/>(embed, rerank)
     participant Q as Qdrant
-    participant LLM as LiteLLM proxy
+    participant LLM as LLM provider
     participant PG as Postgres
 
     User->>UI: Type a question, press Enter
@@ -262,7 +262,7 @@ sequenceDiagram
     participant UI as Web UI
     participant API as Server
     participant W as Ingest worker<br/>(one at a time)
-    participant LLM as LiteLLM proxy
+    participant LLM as LLM provider
     participant Emb as Local models
     participant Q as Qdrant
 
@@ -412,7 +412,7 @@ Other routes:
 | `DELETE /documents/{name}` | Remove a document: its chunks and its PDF (status 204). Status 409 while it is being ingested. |
 | `GET /jobs`, `GET /jobs/{id}` | Ingest jobs: `status` (`queued`, `running`, `done`, `error`), `stage`, `done` and `total` pages, `chunks`, `error` |
 | `GET /stats` | `{"chunks": N, "documents": {name: N}}`: chunks in the vector database |
-| `GET /models` | `{"default": ..., "models": [...]}`: models that the LiteLLM proxy offers |
+| `GET /models` | `{"default": ..., "models": [...]}`: models that the answer endpoint offers (or `ANSWER_MODELS`). If the provider has no model list, only the default model. |
 | `POST /ask/stream` | Same input as `/ask`, plus an optional `model`. Server-sent events: `candidates` (the search result), `token` (pieces of the answer text), then `done` (the same body as `/ask`) or `error` |
 | `GET /page/{doc}/{page}.png` | Image of one page of an ingested document |
 | `GET /conversations` | The 50 most recent conversations. Needs history. |
@@ -460,7 +460,7 @@ The UI is a separate service in `ui/`. It is a React and TypeScript app that Vit
 Open `http://localhost:5173` (development) or `http://localhost:8080` (Docker). The page has a navigation column on the left and one large question box. Type a question and press Enter (Shift+Enter starts a new line). In the box you can:
 
 - choose one document, or all documents,
-- choose the answer **model** from the list that the LiteLLM proxy offers (`GET /models`). The default is `ANSWER_MODEL`,
+- choose the answer **model** from the list that the provider offers (`GET /models`). The default is `ANSWER_MODEL`,
 - select the paperclip to **add a PDF**.
 
 An answer appears in this order:
@@ -669,15 +669,33 @@ The file `mcp-server/pi/docintel.ts` is an example pi extension for a bridge of 
 
 ## Configuration
 
+### Use another provider (for example DeepSeek)
+
+The code calls every model through the `openai` SDK with a base URL, so any provider with an OpenAI-compatible API works. No code change is needed. For DeepSeek:
+
+```
+LLM_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=<your DeepSeek key>
+ANSWER_MODEL=deepseek-flash
+JUDGE_MODEL=deepseek-v4-pro
+```
+
+The vision pass needs a model that accepts images. The DeepSeek API documentation does not state image input. If your DeepSeek model does not accept images, send the vision pass to another provider with `VISION_BASE_URL`, `VISION_API_KEY`, and `VISION_MODEL`. For a local vision model, use Ollama (`VISION_BASE_URL=http://localhost:11434/v1`). You can also ingest with `--no-vision`, but charts, tiles, and scans are then not read.
+
+The answer step streams with `stream_options`. A provider that rejects this option still works: the system retries without it, and the token count is then zero. **Evaluate again after you change the answer model.** The scores in [Results](#results) belong to the models that are named there.
+
 ### Server
 
 Set these values in `server/.env`. Do not commit this file. The file `.gitignore` excludes it. In the Docker stack, the server container reads the same file.
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `LITELLM_URL` | Yes | | Base URL of the proxy. Include `/v1` if the proxy needs it. |
-| `LITELLM_KEY` | Yes | | API key for the proxy |
-| `VISION_MODEL` | Yes | | Model that reads page images |
+| `LLM_BASE_URL`, `LLM_API_KEY` | Yes | | Base URL and key of an OpenAI-compatible API. All three roles use them unless a role has its own. Include `/v1` if the API needs it. The old names `LITELLM_URL` and `LITELLM_KEY` still work. |
+| `ANSWER_BASE_URL`, `ANSWER_API_KEY` | No | `LLM_*` | A separate endpoint for the answer model |
+| `VISION_BASE_URL`, `VISION_API_KEY` | No | `LLM_*` | A separate endpoint for the vision model |
+| `JUDGE_BASE_URL`, `JUDGE_API_KEY` | No | `LLM_*` | A separate endpoint for the judge model |
+| `ANSWER_MODELS` | No | | Models that the UI offers (separated by commas). Use it when the provider has no model list. |
+| `VISION_MODEL` | Yes | | Model that reads page images. It must accept images. |
 | `ANSWER_MODEL` | Yes | | Model that writes answers |
 | `JUDGE_MODEL` | For `eval.py` | | Model that grades answers. Use a different model from `ANSWER_MODEL` if possible. |
 | `TOP_K` | No | 6 | Number of chunks sent to the answer model |

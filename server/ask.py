@@ -5,6 +5,8 @@ import re
 import sys
 import time
 
+from openai import BadRequestError
+
 from reqlog import log
 from rag import COLLECTION, embed, llm, models, qdrant, rerank_scores, sparse
 
@@ -166,7 +168,7 @@ def answer(question, doc=None, via="cli", model=None):
     fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=model)
     try:
         found, ctx, messages = _prepare(question, doc)
-        r = llm().chat.completions.create(model=model, temperature=0, messages=messages)
+        r = llm("answer").chat.completions.create(model=model, temperature=0, messages=messages)
     except Exception as e:
         log(**fields, status="error", error=str(e)[:300], seconds=round(time.time() - t0, 2))
         raise
@@ -182,8 +184,12 @@ def answer_stream(question, doc=None, via="cli", model=None):
     try:
         found, ctx, messages = _prepare(question, doc)
         yield "candidates", {"candidates": _candidates(found), "score_kind": score_kind()}
-        stream = llm().chat.completions.create(
-            model=model, temperature=0, messages=messages, stream=True, stream_options={"include_usage": True})
+        client = llm("answer")
+        try:
+            stream = client.chat.completions.create(
+                model=model, temperature=0, messages=messages, stream=True, stream_options={"include_usage": True})
+        except BadRequestError:  # a provider that does not know stream_options: stream without token counts
+            stream = client.chat.completions.create(model=model, temperature=0, messages=messages, stream=True)
         raw, sent, usage = "", "", None
         for ev in stream:
             usage = ev.usage or usage

@@ -21,8 +21,27 @@ _reranker = None
 _qdrant = None
 
 
-def llm():
-    return OpenAI(base_url=os.environ["LITELLM_URL"], api_key=os.environ["LITELLM_KEY"])
+_clients = {}
+
+
+def _env(role, name, legacy):
+    """ROLE_NAME, else LLM_NAME, else the old LITELLM_* name."""
+    for key in (f"{role.upper()}_{name}", f"LLM_{name}", legacy):
+        if os.environ.get(key):
+            return os.environ[key]
+    return None
+
+
+def llm(role="answer"):
+    """A client for any OpenAI-compatible endpoint (OpenAI, DeepSeek, LiteLLM, OpenRouter, Ollama, vLLM, ...).
+    role is answer, judge, or vision. Each role reads ROLE_BASE_URL and ROLE_API_KEY, and falls back to
+    LLM_BASE_URL and LLM_API_KEY (then to LITELLM_URL and LITELLM_KEY), so one endpoint can serve all roles."""
+    url, key = _env(role, "BASE_URL", "LITELLM_URL"), _env(role, "API_KEY", "LITELLM_KEY")
+    if not url or not key:
+        raise RuntimeError(f"No model endpoint for {role}: set LLM_BASE_URL and LLM_API_KEY (or {role.upper()}_BASE_URL and {role.upper()}_API_KEY)")
+    if (url, key) not in _clients:
+        _clients[url, key] = OpenAI(base_url=url, api_key=key)
+    return _clients[url, key]
 
 
 def embed(texts):

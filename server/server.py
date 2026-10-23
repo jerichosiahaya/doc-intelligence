@@ -118,10 +118,15 @@ _models = (0.0, [])  # (fetched at, ids)
 
 
 def model_ids() -> list[str]:
-    """Models that the LiteLLM proxy offers. Cached for 5 minutes."""
+    """Models that the answer endpoint offers (or ANSWER_MODELS). Cached for 5 minutes."""
     global _models
     if time.time() - _models[0] > 300:
-        _models = (time.time(), sorted(m.id for m in llm().models.list()))
+        fixed = [m.strip() for m in os.environ.get("ANSWER_MODELS", "").split(",") if m.strip()]
+        try:
+            ids = fixed or sorted(m.id for m in llm("answer").models.list())
+        except Exception:  # not every provider has a model list: offer the default model only
+            ids = [os.environ["ANSWER_MODEL"]] if os.environ.get("ANSWER_MODEL") else []
+        _models = (time.time(), ids)
     return _models[1]
 
 
@@ -243,7 +248,7 @@ def stats():
 
 @app.get("/models", dependencies=[Depends(require_key)])
 def models_list():
-    """Models that the LiteLLM proxy offers, and the one used when a request names none."""
+    """Models that the answer endpoint offers, and the one used when a request names none."""
     try:
         return {"default": os.environ.get("ANSWER_MODEL"), "models": model_ids()}
     except Exception as e:

@@ -35,7 +35,7 @@ services:
     build: ./server
     container_name: docintel-server
     env_file:
-      - path: ./server/.env      # LITELLM_URL, LITELLM_KEY, model names
+      - path: ./server/.env      # LLM_BASE_URL, LLM_API_KEY, model names
         required: false
     environment:
       API_KEY: ${API_KEY:-}      # required: the server refuses to listen on 0.0.0.0 without it
