@@ -177,7 +177,7 @@ def _candidates(found):
     return [
         {"doc": c["doc"], "pages": c["pages"], "type": c["type"], "caption": c["caption"],
          "score": round(c["score"], 4), "used": i < K,
-         "snippet": " ".join(c["text"].replace("|", " ").replace("-", " ").split())[:110]}
+         "snippet": " ".join(re.sub(r"[|*#_-]", " ", c["text"]).split())[:110]}
         for i, c in enumerate(found)
     ]
 
