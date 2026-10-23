@@ -24,6 +24,8 @@ The sample document is the fictional "Kirana Logistics Group Annual Report 2025"
 
 **Customer summary (one page, for a business owner):** [CUSTOMER_SUMMARY.md](CUSTOMER_SUMMARY.md)
 
+**Demo video (84 seconds, no sound):** [assets/demo.mp4](assets/demo.mp4). It shows a greeting (no search), a question with sources and a streamed answer, a cited page, the relevancy scores, a refusal, a rule that needs missing data, and the Documents dialog.
+
 ## Contents
 
 1. [Quick start](#quick-start)
@@ -1020,7 +1022,7 @@ The author used Claude Code (an AI coding assistant) to plan the design, write t
 
 ```
 CUSTOMER_SUMMARY.md          One-page summary for a business owner
-assets/                      Screenshots for this README
+assets/                      Screenshots and the demo video
 server/                      The server service (Python)
   ingest.py                  Reads a PDF, makes chunks, runs number checks, and fills the index
   ask.py                     Finds chunks, gets an answer, checks citations. Also the CLI.
