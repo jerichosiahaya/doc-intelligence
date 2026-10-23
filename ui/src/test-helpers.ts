@@ -33,6 +33,7 @@ interface Options {
 export function sse(a: AskResponse): Response {
   const ev = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
   let out = "";
+  if (a.route) out += ev("route", { route: a.route });
   if (a.candidates) out += ev("candidates", { candidates: a.candidates, score_kind: a.score_kind ?? "" });
   for (const w of a.answer.split(/(?<= )/)) out += ev("token", { text: w });
   out += ev("done", a);

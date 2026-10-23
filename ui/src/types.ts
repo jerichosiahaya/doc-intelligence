@@ -31,6 +31,8 @@ export interface AnswerData {
   /** Absent for answers loaded from history: the server does not save them. */
   candidates?: Candidate[];
   score_kind?: "cosine" | "rrf" | "rerank" | "";
+  /** chat: the message was not a document question, so nothing was searched */
+  route?: "rag" | "chat";
 }
 
 export interface AskResponse extends AnswerData {

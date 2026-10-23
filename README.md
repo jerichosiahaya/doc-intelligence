@@ -211,7 +211,7 @@ PDF ──► ingest.py ──► chunks ──► embeddings ──► Qdrant
 | Web UI | React 19, TypeScript, Vite | No UI library and no state library. |
 | UI web server | nginx | Serves the build and forwards `/api`. |
 | MCP server | MCP Python SDK, httpx | Thin client of the REST API. |
-| Tests | pytest; Vitest and Testing Library | 53 server tests, 33 UI tests, 23 MCP tests. |
+| Tests | pytest; Vitest and Testing Library | 66 server tests, 36 UI tests, 23 MCP tests. |
 | Packaging and CI | Docker Compose; GitHub Actions | Four services. Three CI jobs. |
 
 ### Sequence diagrams
@@ -231,10 +231,16 @@ sequenceDiagram
     User->>UI: Type a question, press Enter
     UI->>API: POST /api/ask/stream (question, doc, model)
     API->>API: Check the key, the document, the model
-    API->>Emb: Embed the question
-    API->>Q: Search (top 20 candidates)
-    Q-->>API: Candidate chunks
-    API->>Emb: Rerank the candidates, keep the best 6
+    par Intent router
+        API->>LLM: Is this a document question? (one word: rag or chat)
+        LLM-->>API: rag
+    and Search
+        API->>Emb: Embed the question
+        API->>Q: Search (top 20 candidates)
+        Q-->>API: Candidate chunks
+        API->>Emb: Rerank the candidates, keep the best 6
+    end
+    API-->>UI: event: route (rag)
     API-->>UI: event: candidates (pages and relevancy scores)
     UI-->>User: Show the source cards
     API->>LLM: Chat request (6 excerpts + question), stream=true
@@ -334,6 +340,17 @@ Two options change this step:
 
 Both options run on the local machine and need no API key. See [Evaluation](#evaluation) for the evidence about them.
 
+### Intent routing
+
+Not every message is a question about the documents. "hey" or "thanks!" needs no search. Before it answers, the system asks a model one question: is this message a **document question** (`rag`) or **chat** (`chat`)?
+
+- **`rag`:** the normal path (search, rerank, answer with citations).
+- **`chat`:** greetings, thanks, goodbyes, small talk, and questions about the assistant itself ("who are you?", "what can you do?", "what documents do you have?"). The system makes no search. The reply has no sources and no candidates. The model gets only the names of the documents, and it is told not to state facts from the documents or from its own knowledge.
+
+The router runs **at the same time as the search**, so a document question loses no time. A chat message drops the search result. The router call is small (about 150 input tokens). Any problem with the router (an error, an empty reply, an unclear word) means `rag`. A wrong `rag` costs one search. A wrong `chat` would hide the documents.
+
+The reply of `POST /ask` and the `done` event contain `route` (`rag` or `chat`). The stream starts with a `route` event. Set `ROUTER=0` to turn the router off. Set `ROUTER_MODEL` to use a smaller model for it (the default is `ANSWER_MODEL`). A model that thinks before it answers (for example `deepseek-flash`) needs about 20 to 30 tokens for this call, so the code allows 128.
+
 ### Answering
 
 The answer model receives the retrieved chunks. Each chunk has a label, for example `[report p.4]` or `[report p.7-8]`. The system prompt gives these rules:
@@ -401,6 +418,7 @@ Response fields:
 | `seconds` | number | Time to answer |
 | `tokens` | integer | Total tokens used by the answer call. Zero if the proxy does not report usage. |
 | `conversation_id` | string or null | The conversation that holds this turn. Null when history is off or the save failed. |
+| `route` | `rag` or `chat` | `chat` when the message was not a document question. Then there is no search, no citations, and no candidates. |
 
 Other routes:
 
@@ -413,7 +431,7 @@ Other routes:
 | `GET /jobs`, `GET /jobs/{id}` | Ingest jobs: `status` (`queued`, `running`, `done`, `error`), `stage`, `done` and `total` pages, `chunks`, `error` |
 | `GET /stats` | `{"chunks": N, "documents": {name: N}}`: chunks in the vector database |
 | `GET /models` | `{"default": ..., "models": [...]}`: models that the answer endpoint offers (or `ANSWER_MODELS`). If the provider has no model list, only the default model. |
-| `POST /ask/stream` | Same input as `/ask`, plus an optional `model`. Server-sent events: `candidates` (the search result), `token` (pieces of the answer text), then `done` (the same body as `/ask`) or `error` |
+| `POST /ask/stream` | Same input as `/ask`, plus an optional `model`. Server-sent events: `route` (`rag` or `chat`), `candidates` (the search result; not sent for `chat`), `token` (pieces of the answer text), then `done` (the same body as `/ask`) or `error` |
 | `GET /page/{doc}/{page}.png` | Image of one page of an ingested document |
 | `GET /conversations` | The 50 most recent conversations. Needs history. |
 | `GET /conversations/{id}` | One conversation with all its messages. Needs history. |
@@ -470,6 +488,8 @@ An answer appears in this order:
 - **Retrieval details**: how many candidates the search found, how many went to the model, and the relevancy score of each one,
 - a note when the system removed a citation that it could not verify.
 
+A message that is not a document question (for example "hey") gets a short reply with no sources, no candidates, and the note "no search needed" (see [Intent routing](#intent-routing)).
+
 Select **Documents** in the navigation column to see the documents, the chunk count of each, and the total in the vector database. In the same dialog you can drop or choose a PDF. The page shows the progress ("Reading page 4 of 13"). A vision model reads every page, so a 13-page report takes about two minutes. Uploads run one at a time. **Remove** deletes a document (it asks twice).
 
 When history is on, the navigation column also lists the saved conversations. Select one to reopen it (the candidate list is not saved, so an old answer shows only its pages). Select **New thread** to start another. **Delete** asks you to select it twice.
@@ -496,7 +516,7 @@ Because the browser sees one host, the Docker setup needs no CORS setting.
 | `ui/src/App.tsx` | State of the page: conversations, current thread, errors, key prompt |
 | `ui/src/components/` | `Composer` (question box, document and model choice), `AnswerCard` (sources, streaming text, candidates), `Sidebar`, `DocumentsPanel` (upload and remove), `KeyBar` |
 | `ui/src/useUploads.ts` | Uploads a PDF and follows its ingest job |
-| `ui/src/*.test.ts(x)` | 33 tests with Vitest and Testing Library, against a fake of the server API |
+| `ui/src/*.test.ts(x)` | 36 tests with Vitest and Testing Library, against a fake of the server API |
 | `ui/Dockerfile`, `ui/nginx.conf.template` | Production image: Vite build, served by nginx, `/api` forwarded to the server |
 
 Commands, in `ui/`: `npm run dev`, `npm run typecheck`, `npm test`, `npm run build`.
@@ -694,6 +714,8 @@ Set these values in `server/.env`. Do not commit this file. The file `.gitignore
 | `ANSWER_BASE_URL`, `ANSWER_API_KEY` | No | `LLM_*` | A separate endpoint for the answer model |
 | `VISION_BASE_URL`, `VISION_API_KEY` | No | `LLM_*` | A separate endpoint for the vision model |
 | `JUDGE_BASE_URL`, `JUDGE_API_KEY` | No | `LLM_*` | A separate endpoint for the judge model |
+| `ROUTER` | No | `1` (on) | Set to `0` to send every message to the search |
+| `ROUTER_MODEL` | No | `ANSWER_MODEL` | Model for the intent router. A small, fast model is enough. |
 | `ANSWER_MODELS` | No | | Models that the UI offers (separated by commas). Use it when the provider has no model list. |
 | `VISION_MODEL` | Yes | | Model that reads page images. It must accept images. |
 | `ANSWER_MODEL` | Yes | | Model that writes answers |
@@ -768,7 +790,7 @@ The report shows, for each kind and source: the number of calls, the number of e
 
 ### Method
 
-The file `eval.yaml` contains 19 questions that were written by hand from the sample report. Each question has an expected answer, the pages that support it, and (for answerable questions) the evidence strings that must appear in the retrieved text.
+The file `eval.yaml` contains 30 questions that were written by hand from the sample report: 19 document questions, 8 chitchat messages (to test the router), and 3 short or casual document questions. Each question has an expected answer, the pages that support it, and (for answerable questions) the evidence strings that must appear in the retrieved text.
 
 | Content type | Questions |
 |---|---|
@@ -833,7 +855,7 @@ All numbers come from `python eval.py` on the Kirana report (31 chunks from 13 p
 | Rule that needs missing data | 1 | 1 of 1 | 1 of 1 |
 | **All** | **19** | **17 of 17** | **19 of 19** |
 
-**How the score changed.** Each row is one full run of the 19 questions.
+**How the score changed.** Each row is one full run of the first 19 questions.
 
 | Run | Retrieval | Answers | What failed |
 |---|---|---|---|
@@ -847,6 +869,16 @@ Time for one answer call was 3.5 s (`gpt-4.1-mini`), 3.7 s (`claude-sonnet-4.6`)
 
 Run 5 changed the vision model too, so the index has new page transcripts. It also used a different judge, so compare it to the other runs with care. In Q19 the answer was right, but the retrieved text did not contain all evidence strings. The vision transcript words differ a little between models, and the retrieval check is strict.
 
+**Intent router** (run 6: the same configuration as run 5, with the 11 new questions; 30 questions in all):
+
+| Group | Questions | Result |
+|---|---|---|
+| Chitchat ("hey", "thanks!", "who are you?", "what documents do you have?", "halo, apa kabar?", and 3 more) | 8 | **8 of 8** routed to `chat` |
+| Document questions, including short ones ("Revenue 2025?", "net profit 2024") | 22 | **22 of 22** routed to `rag` |
+| Answer quality on all 30 | 30 | **30 of 30** |
+
+A chat reply takes about 2.3 s, and a document answer about 3.7 s. A first version of the router allowed only 8 tokens. `deepseek-flash` spends tokens on thinking before it answers, so it returned an empty reply, and every message went to `rag`. The unit tests did not catch this, and a live test did. A test now checks the token budget.
+
 **The failures, and their causes.**
 
 - **Q7, "How many cold-chain facilities are listed?"** (expected 6). `gpt-4.1-mini` answered 7, then 8. It counted Cibitung twice (once from the table and once from the text about full capacity). The cause is the answer model. A prompt rule ("count each distinct item once, and list them") did not fix it for this model. The two stronger models answer 6.
@@ -858,7 +890,7 @@ Run 5 changed the vision model too, so the index has new page transcripts. It al
 ### Notes on the question set
 
 - **The scores are not a held-out test.** The prompt rules for Q7 and Q19 were written after those questions failed, and the same questions measure them. The 19 of 19 shows that the known failures are fixed. It does not show the same rate on new questions.
-- One person wrote all 19 questions. The set is small. A second reviewer has not added questions yet. Ask a second person to write 5 to 10 questions without seeing this set, and run them once.
+- One person wrote all 30 questions. The set is small. A second reviewer has not added questions yet. Ask a second person to write 5 to 10 questions without seeing this set, and run them once.
 - The expected answers for questions 4 and 5 are calculations. Check them again by hand.
 - The judge is a language model. It can make mistakes. Read `results.json` for the failed questions.
 - The pipeline was tested on one report. Run it on a second, different PDF before you trust it in general.
@@ -946,6 +978,7 @@ The workflow `.github/workflows/ci.yml` has three jobs for each push and pull re
 - **UI tests use a fake server.** A change to the REST API that the fake does not copy can pass the UI tests and still break the page.
 - **Cost is an estimate.** Cost comes from the token counts that the proxy reports and from the prices that you set. If the proxy does not report tokens, the report shows zero.
 - **Few documents tested.** The pipeline was tested on one report. Other layouts (for example, scanned pages with no text layer, or tables without lines) are not tested.
+- **The router can be wrong.** It sees one message, not the conversation. A message that mixes both ("thanks, and what was the net profit?") may be sent to either path. Only 8 chitchat messages were tested. The router adds one small model call to every message (it runs beside the search, so the delay is small).
 - **Small, tuned evaluation.** The pass rate comes from 19 questions that one person wrote, and the prompt was tuned on them. See [Notes on the question set](#notes-on-the-question-set).
 - **Candidates are not saved.** A conversation that you reopen shows the pages of each answer, but not the candidate list and relevancy scores.
 - **Uploads are slow and sequential.** A vision model reads every page, one page at a time. A 13-page report takes about two minutes. Uploads run one after the other.

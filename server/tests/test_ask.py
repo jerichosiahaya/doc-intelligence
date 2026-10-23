@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 import ask
 
 D = "report"
@@ -49,6 +51,7 @@ def _patch(monkeypatch, content):
     chunks = [{"doc": D, "pages": [4], "type": "table", "caption": "Table 1", "score": 0.5, "text": "| a |"}]
     logged = []
     monkeypatch.setenv("ANSWER_MODEL", "m")
+    monkeypatch.setenv("ROUTER", "0")  # router tests turn it on
     monkeypatch.setattr(ask, "search", lambda q, k=6, doc=None: chunks)
     monkeypatch.setattr(ask, "llm", _fake_llm(content))
     monkeypatch.setattr(ask, "log", lambda **f: logged.append(f))
@@ -120,7 +123,7 @@ def test_answer_stream_yields_candidates_tokens_and_the_final_dict(monkeypatch):
 
     monkeypatch.setattr(ask, "llm", lambda *role: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
     out = list(ask.answer_stream("q", model="other"))
-    assert out[0][0] == "candidates" and out[-1][0] == "done"
+    assert out[0] == ("route", "rag") and out[1][0] == "candidates" and out[-1][0] == "done"
     assert "".join(t for k, t in out if k == "token") == "Net profit was 5."
     assert out[-1][1]["tokens"] == 30 and out[-1][1]["citations"] == [{"doc": D, "page": 4}]
     assert seen["model"] == "other" and seen["stream"] is True
@@ -144,3 +147,78 @@ def test_stream_falls_back_when_the_provider_rejects_stream_options(monkeypatch)
     out = list(ask.answer_stream("q"))
     assert out[-1][1]["answer"] == "Five." and out[-1][1]["tokens"] is None  # no usage from this provider
     assert ["stream_options" in c for c in calls] == [True, False]
+
+
+def _router_llm(route_word, chat_text="Hello! Ask me about your documents."):
+    """A fake client: the router call (it sets max_tokens) gets route_word, any other call gets chat_text."""
+    usage = SimpleNamespace(total_tokens=9, prompt_tokens=6, completion_tokens=3)
+
+    def create(**kw):
+        if kw.get("stream"):
+            parts = [chat_text[:6], chat_text[6:]]
+            evs = [SimpleNamespace(usage=None, choices=[SimpleNamespace(delta=SimpleNamespace(content=p))]) for p in parts]
+            return iter(evs + [SimpleNamespace(usage=usage, choices=[])])
+        text = route_word if "max_tokens" in kw else chat_text
+        return SimpleNamespace(usage=usage, choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+    return lambda *role: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+
+def _router_on(monkeypatch, word):
+    _patch(monkeypatch, "")
+    monkeypatch.setenv("ROUTER", "1")
+    monkeypatch.setattr(ask, "llm", _router_llm(word))
+
+
+def test_route_reads_one_word_and_defaults_to_rag(monkeypatch):
+    for word, want in (("chat", "chat"), (" Chat.", "chat"), ("rag", "rag"), ("", "rag"), ("maybe", "rag")):
+        _router_on(monkeypatch, word)
+        assert ask.route("hey") == want, word
+
+
+def test_route_falls_back_to_rag_on_error_and_can_be_turned_off(monkeypatch):
+    _patch(monkeypatch, "")
+    monkeypatch.setenv("ROUTER", "1")
+    monkeypatch.setattr(ask, "llm", lambda *role: (_ for _ in ()).throw(RuntimeError("down")))
+    assert ask.route("hey") == "rag"
+    monkeypatch.setenv("ROUTER", "0")
+    monkeypatch.setattr(ask, "llm", lambda *role: pytest.fail("the router must not call the model when it is off"))
+    assert ask.route("hey") == "rag"
+
+
+def test_a_chat_message_gets_a_reply_without_sources_or_candidates(monkeypatch):
+    _router_on(monkeypatch, "chat")
+    out = ask.answer("hey")
+    assert out["route"] == "chat" and out["answer"].startswith("Hello")
+    assert out["citations"] == [] and out["retrieved"] == [] and out["candidates"] == [] and out["refused"] is False
+
+
+def test_a_document_question_still_searches(monkeypatch):
+    _router_on(monkeypatch, "rag")
+    monkeypatch.setattr(ask, "llm", _fake_llm('{"answer": "Five.", "citations": [], "refused": false}'))
+    monkeypatch.setenv("ROUTER", "0")
+    assert ask.answer("net profit?")["route"] == "rag"
+
+
+def test_chat_streams_tokens_and_sends_no_candidates(monkeypatch):
+    _router_on(monkeypatch, "chat")
+    ev = list(ask.answer_stream("hey"))
+    kinds = [k for k, _ in ev]
+    assert kinds[0] == "route" and ev[0][1] == "chat" and kinds[-1] == "done"
+    assert "candidates" not in kinds
+    assert "".join(d for k, d in ev if k == "token") == "Hello! Ask me about your documents."
+    assert ev[-1][1]["route"] == "chat" and ev[-1][1]["tokens"] == 9
+
+
+def test_router_leaves_room_for_a_reasoning_model(monkeypatch):
+    _patch(monkeypatch, "")
+    monkeypatch.setenv("ROUTER", "1")
+    seen = {}
+
+    def create(**kw):
+        seen.update(kw)
+        return SimpleNamespace(usage=None, choices=[SimpleNamespace(message=SimpleNamespace(content="chat"))])
+
+    monkeypatch.setattr(ask, "llm", lambda *role: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    ask.route("hey")
+    assert seen["max_tokens"] >= 64  # 8 tokens gave an empty reply from deepseek-flash, which thinks first

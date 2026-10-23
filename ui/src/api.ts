@@ -52,6 +52,7 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
 const json = async <T>(path: string, init?: RequestInit): Promise<T> => (await request(path, init)).json();
 
 export interface StreamHandlers {
+  onRoute?: (route: "rag" | "chat") => void;
   onCandidates: (c: { candidates: Candidate[]; score_kind: string }) => void;
   onToken: (text: string) => void;
 }
@@ -82,7 +83,8 @@ async function askStream(
       const data = /^data: (.*)$/m.exec(block)?.[1];
       if (!event || data === undefined) continue;
       const payload = JSON.parse(data);
-      if (event === "candidates") on.onCandidates(payload);
+      if (event === "route") on.onRoute?.(payload.route);
+      else if (event === "candidates") on.onCandidates(payload);
       else if (event === "token") on.onToken(payload.text);
       else if (event === "done") done = payload;
       else if (event === "error") throw new ApiError(502, payload.message);

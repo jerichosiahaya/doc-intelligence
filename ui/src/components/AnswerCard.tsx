@@ -118,10 +118,12 @@ export default function AnswerCard({ data, streaming = false }: { data: AnswerDa
     : data.retrieved.map((s) => ({ doc: s.doc, pages: [s.page] })); // an answer reopened from history has no candidates
   const cited = (c: Card) => data.citations.some((s) => s.doc === c.doc && c.pages.includes(s.page));
   const paragraphs = data.answer.split(/\n{2,}/);
+  // a chat message has no sources. An answer reopened from history has none saved either.
+  const chat = data.route === "chat" || (!streaming && !data.refused && data.retrieved.length === 0 && !data.candidates?.length);
 
   return (
     <article className="answer-card" aria-busy={streaming}>
-      {cards.length > 0 && (
+      {!chat && cards.length > 0 && (
         <section aria-label="Sources">
           <h3>Sources</h3>
           <ol className="sources">
@@ -141,17 +143,21 @@ export default function AnswerCard({ data, streaming = false }: { data: AnswerDa
           </ol>
         </section>
       )}
-      {open && (
+      {!chat && open && (
         <div className="page">
           <PageImage source={open} />
         </div>
       )}
 
       <section aria-label="Answer">
-        <h3>
-          Answer
-          {streaming && <span className="dots" aria-hidden="true"><i /><i /><i /></span>}
-        </h3>
+        {chat ? (
+          streaming && !data.answer && <span className="dots" aria-hidden="true"><i /><i /><i /></span>
+        ) : (
+          <h3>
+            Answer
+            {streaming && <span className="dots" aria-hidden="true"><i /><i /><i /></span>}
+          </h3>
+        )}
         {data.refused && <div className="badge">Not in the document</div>}
         {data.answer ? (
           <div className="answer">
@@ -165,7 +171,7 @@ export default function AnswerCard({ data, streaming = false }: { data: AnswerDa
             ))}
           </div>
         ) : (
-          streaming && <p className="meta">{data.candidates ? "Reading the sources…" : "Searching the documents…"}</p>
+          streaming && !chat && <p className="meta">{data.candidates ? "Reading the sources…" : "Searching the documents…"}</p>
         )}
         {data.rejected_citations.length > 0 && (
           <p className="meta">
@@ -174,8 +180,9 @@ export default function AnswerCard({ data, streaming = false }: { data: AnswerDa
         )}
       </section>
 
-      {data.candidates && data.candidates.length > 0 && <Candidates list={data.candidates} kind={data.score_kind ?? ""} />}
-      {!streaming && (
+      {!chat && data.candidates && data.candidates.length > 0 && <Candidates list={data.candidates} kind={data.score_kind ?? ""} />}
+      {!streaming && chat && <p className="meta">{data.seconds}s · no search needed</p>}
+      {!streaming && !chat && (
         <p className="meta">
           Retrieved {data.retrieved.length} pages · {data.seconds}s · {data.tokens} tokens
         </p>

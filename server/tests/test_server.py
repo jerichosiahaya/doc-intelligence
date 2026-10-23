@@ -92,7 +92,7 @@ def test_ask_reply_carries_candidates_and_grpc_ignores_them(client, monkeypatch)
     monkeypatch.setattr(server, "answer", lambda q, doc=None, via="rest", model=None: {**REPLY, "candidates": [cand], "score_kind": "cosine"})
     r = client.post("/ask", json={"question": "q"}).json()
     assert r["candidates"] == [cand] and r["score_kind"] == "cosine"
-    server.pb.AskReply(**server.ask("q").model_dump(exclude={"candidates", "score_kind"}, mode="python") | {"conversation_id": ""})
+    server.pb.AskReply(**server.ask("q").model_dump(exclude={"candidates", "score_kind", "route"}, mode="python") | {"conversation_id": ""})
 
 
 def _models(monkeypatch, ids=("m1", "m2")):
@@ -127,6 +127,7 @@ def _events(text):
 
 def test_stream_sends_candidates_tokens_then_the_full_reply(client, monkeypatch):
     def fake(q, doc=None, via="rest", model=None):
+        yield "route", "rag"
         yield "candidates", {"candidates": [], "score_kind": "cosine"}
         yield "token", "Hel"
         yield "token", "lo"
@@ -136,7 +137,8 @@ def test_stream_sends_candidates_tokens_then_the_full_reply(client, monkeypatch)
     r = client.post("/ask/stream", json={"question": "q"})
     assert r.headers["content-type"].startswith("text/event-stream")
     ev = _events(r.text)
-    assert [e for e, _ in ev] == ["candidates", "token", "token", "done"]
+    assert [e for e, _ in ev] == ["route", "candidates", "token", "token", "done"]
+    assert ev[0][1] == {"route": "rag"}
     assert "".join(d["text"] for e, d in ev if e == "token") == "Hello"
     assert ev[-1][1]["answer"] == "Hello" and ev[-1][1]["citations"] == [SRC]
 

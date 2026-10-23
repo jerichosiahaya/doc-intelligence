@@ -20,3 +20,14 @@
 - {id: 17, type: unanswerable, q: "What volume discount applies to a customer storing 1,000 pallets?", expected: REFUSE}
 - {id: 18, type: unanswerable, q: "What dividend per share did Kirana pay for 2025?", expected: REFUSE}
 - {id: 19, type: partial, q: "Which facilities are on the consolidation watch list?", expected: "Cannot be determined: the rule needs two consecutive quarters below 65% but only annual utilisation is given. Hat Yai (64%) and Da Nang (62%) are below 65% for the year", pages: [7, 8], evidence: ["Da Nang", "65%"]}
+- {id: 20, type: chitchat, q: "hey", expected: CHAT}
+- {id: 21, type: chitchat, q: "thanks!", expected: CHAT}
+- {id: 22, type: chitchat, q: "Hello, what can you do?", expected: CHAT}
+- {id: 23, type: chitchat, q: "who are you?", expected: CHAT}
+- {id: 24, type: chitchat, q: "good morning", expected: CHAT}
+- {id: 25, type: chitchat, q: "what documents do you have?", expected: CHAT}
+- {id: 26, type: chitchat, q: "halo, apa kabar?", expected: CHAT}
+- {id: 27, type: chitchat, q: "ok cool, bye", expected: CHAT}
+- {id: 28, type: terse, q: "Revenue 2025?", expected: "THB 8,420 million", pages: [4], evidence: ["8,420"]}
+- {id: 29, type: terse, q: "net profit 2024", expected: "THB 468 million", pages: [4], evidence: ["468"]}
+- {id: 30, type: terse, q: "ok so how many EV trucks did they add last year", expected: "82. The CEO letter says 96 but the errata corrects it to 82", pages: [9, 12], evidence: ["82"]}

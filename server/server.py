@@ -108,6 +108,7 @@ class AskReply(BaseModel):
     conversation_id: str | None = None  # set when history is on and the turn was saved
     candidates: list[Candidate] = []  # REST only: every chunk the search fetched, with its relevancy score
     score_kind: str = ""  # cosine, rrf or rerank: what the scores mean
+    route: str = "rag"  # REST only: chat when the message was not a document question (no search was made)
 
 
 def doc_names():
@@ -154,6 +155,7 @@ def build_reply(a, question, doc, via, conversation_id) -> AskReply:
         conversation_id=str(conversation_id) if conversation_id else None,
         candidates=a.get("candidates", []),
         score_kind=a.get("score_kind", ""),
+        route=a.get("route", "rag"),
     )
     if history.enabled():
         try:  # a failed save must not lose an answer that already cost a model call
@@ -188,7 +190,7 @@ class DocIntel(pb_grpc.DocIntelServicer):
             context.abort(grpc.StatusCode.FAILED_PRECONDITION, "history is not enabled (set DATABASE_URL)")
         except Exception as e:  # LLM proxy or vector store failure
             context.abort(grpc.StatusCode.UNAVAILABLE, f"backend error: {e}")
-        return pb.AskReply(**{**r.model_dump(exclude={"candidates", "score_kind"}), "conversation_id": r.conversation_id or ""})
+        return pb.AskReply(**{**r.model_dump(exclude={"candidates", "score_kind", "route"}), "conversation_id": r.conversation_id or ""})
 
 
 MODE = "both"
@@ -273,7 +275,7 @@ def sse(event: str, data) -> str:
 
 @app.post("/ask/stream", dependencies=[Depends(require_key)])
 def post_ask_stream(req: AskRequest):
-    """Server-sent events: candidates (the search result), token (answer text, in pieces), done (the
+    """Server-sent events: route (rag or chat), candidates (the search result; not sent for chat), token (answer text, in pieces), done (the
     same body as POST /ask), or error. Problems that exist before the model call return an HTTP error."""
     try:
         precheck(req.doc, req.conversation_id, req.model)
@@ -285,6 +287,8 @@ def post_ask_stream(req: AskRequest):
             for kind, data in answer_stream(req.question, req.doc, via="rest", model=req.model):
                 if kind == "token":
                     data = {"text": data}
+                elif kind == "route":
+                    data = {"route": data}
                 elif kind == "done":
                     data = build_reply(data, req.question, req.doc, "rest", req.conversation_id).model_dump()
                 yield sse(kind, data)

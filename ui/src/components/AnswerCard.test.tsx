@@ -46,6 +46,21 @@ describe("AnswerCard", () => {
     expect(screen.getAllByRole("button", { name: /^Source \d/ })).toHaveLength(1);
   });
 
+  it("shows a chat reply without sources, candidates, or the retrieval footer", () => {
+    render(<AnswerCard data={data({ answer: "Hello! Ask me about your documents.", route: "chat", citations: [], retrieved: [] })} />);
+    expect(screen.getByText(/Hello! Ask me/)).toBeInTheDocument();
+    expect(screen.queryByText("Sources")).not.toBeInTheDocument();
+    expect(screen.queryByText("Answer")).not.toBeInTheDocument();
+    expect(screen.queryByText(/candidates retrieved/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Retrieved/)).not.toBeInTheDocument();
+    expect(screen.getByText(/no search needed/)).toBeInTheDocument();
+  });
+
+  it("does not say it is searching while a chat reply is on its way", () => {
+    render(<AnswerCard streaming data={data({ answer: "", route: "chat", retrieved: [] })} />);
+    expect(screen.queryByText("Searching the documents…")).not.toBeInTheDocument();
+  });
+
   it("marks a refusal", () => {
     render(<AnswerCard data={data({ refused: true, citations: [] })} />);
     expect(screen.getByText("Not in the document")).toBeInTheDocument();

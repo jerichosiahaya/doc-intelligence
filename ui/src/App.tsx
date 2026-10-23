@@ -137,6 +137,7 @@ export default function App() {
       const d = await api.askStream(
         { question, doc: doc || null, model: model || null, conversation_id: conversationId },
         {
+          onRoute: (route) => patch((a) => ({ ...a, route })),
           onCandidates: (c) => patch((a) => ({ ...a, candidates: c.candidates, score_kind: c.score_kind as AnswerData["score_kind"] })),
           onToken: (text) => patch((a) => ({ ...a, answer: a.answer + text })),
         },

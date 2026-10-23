@@ -4,6 +4,8 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from openai import BadRequestError
 
@@ -102,6 +104,63 @@ def label(c):
     return f"{c['doc']} p.{a}" if a == b else f"{c['doc']} p.{a}-{b}"
 
 
+ROUTER_PROMPT = """You route the messages of an assistant that answers questions about the user's documents (reports in PDF form).
+Reply with one word.
+- rag: the message asks for facts that the documents could contain: numbers, tables, charts, policies, names, dates, comparisons, or a short topic such as "revenue 2025".
+- chat: the message is only a greeting, thanks, a goodbye, small talk, or a question about the assistant itself, how to use it, or which documents it has.
+If you are not sure, reply rag."""
+
+CHAT_SYSTEM = """You are the assistant of a document question-answering system. The user's message is not a question about the documents.
+Reply briefly and in a friendly way, in the language of the user. Use plain text only: no Markdown and no asterisks.
+- You can say what you do: you answer questions about the ingested documents, you cite the pages, and you say so when the documents do not contain the answer.
+- Documents available now: {docs}.
+- Do not state any fact from the documents, and do not use your own knowledge about the company. If the user wants a fact, ask them to write it as a question."""
+
+
+def route(question):
+    """rag or chat. ROUTER=0 turns the router off. Any problem returns rag: a wrong rag costs one search,
+    but a wrong chat would hide the documents."""
+    if os.environ.get("ROUTER", "1") != "1":
+        return "rag"
+    t0 = time.time()
+    model = os.environ.get("ROUTER_MODEL") or os.environ.get("ANSWER_MODEL")
+    try:
+        r = llm("answer").chat.completions.create(
+            model=model, temperature=0, max_tokens=128,  # a reasoning model spends about 20 to 30 of these before it answers
+            messages=[{"role": "system", "content": ROUTER_PROMPT}, {"role": "user", "content": question}])
+        word = (r.choices[0].message.content or "").strip().lower()
+        u = r.usage
+        log(kind="route", model=model, status="ok", seconds=round(time.time() - t0, 2), route=word[:8],
+            prompt_tokens=u.prompt_tokens if u else None, completion_tokens=u.completion_tokens if u else None)
+    except Exception as e:
+        log(kind="route", model=model, status="error", error=str(e)[:200], seconds=round(time.time() - t0, 2))
+        return "rag"
+    return "chat" if word.startswith("chat") else "rag"
+
+
+def _chat_messages(question):
+    docs = ", ".join(sorted(p.stem for p in Path("docs").glob("*.pdf"))) or "none yet"
+    return [{"role": "system", "content": CHAT_SYSTEM.format(docs=docs)}, {"role": "user", "content": question}]
+
+
+def _chat_result(text, u, t0, fields):
+    out = {"answer": text.strip(), "citations": [], "rejected_citations": [], "refused": False,
+           "retrieved_sources": [], "retrieved_pages": [], "retrieved": [], "candidates": [], "score_kind": "",
+           "route": "chat", "seconds": round(time.time() - t0, 2), "tokens": u.total_tokens if u else None,
+           "prompt_tokens": u.prompt_tokens if u else None, "completion_tokens": u.completion_tokens if u else None}
+    log(**{**fields, "kind": "chat"}, status="ok", seconds=out["seconds"], tokens=out["tokens"],
+        prompt_tokens=out["prompt_tokens"], completion_tokens=out["completion_tokens"])
+    return out
+
+
+def _start_search(question, doc):
+    """Search while the router decides, so a document question loses no time. A chat message drops the result."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_prepare, question, doc)
+    pool.shutdown(wait=False)
+    return future
+
+
 def _prepare(question, doc):
     """Search, then build the prompt. Returns all candidates, the K sent to the model, and the messages."""
     found = search(question, doc=doc)
@@ -121,6 +180,14 @@ def _candidates(found):
          "snippet": " ".join(c["text"].replace("|", " ").replace("-", " ").split())[:110]}
         for i, c in enumerate(found)
     ]
+
+
+def _stream(client, model, messages):
+    try:
+        return client.chat.completions.create(
+            model=model, temperature=0, messages=messages, stream=True, stream_options={"include_usage": True})
+    except BadRequestError:  # a provider that does not know stream_options: stream without token counts
+        return client.chat.completions.create(model=model, temperature=0, messages=messages, stream=True)
 
 
 def _answer_text(buf):
@@ -152,6 +219,7 @@ def _finish(raw, found, ctx, u, t0, fields):
     out["retrieved"] = ctx
     out["candidates"] = _candidates(found)
     out["score_kind"] = score_kind()
+    out["route"] = "rag"
     out["seconds"] = round(time.time() - t0, 2)
     out["tokens"] = u.total_tokens if u else None
     out["prompt_tokens"] = u.prompt_tokens if u else None
@@ -167,7 +235,11 @@ def answer(question, doc=None, via="cli", model=None):
     model = model or os.environ["ANSWER_MODEL"]
     fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=model)
     try:
-        found, ctx, messages = _prepare(question, doc)
+        search_job = _start_search(question, doc)
+        if route(question) == "chat":
+            r = llm("answer").chat.completions.create(model=model, temperature=0, messages=_chat_messages(question))
+            return _chat_result(r.choices[0].message.content or "", r.usage, t0, fields)
+        found, ctx, messages = search_job.result()
         r = llm("answer").chat.completions.create(model=model, temperature=0, messages=messages)
     except Exception as e:
         log(**fields, status="error", error=str(e)[:300], seconds=round(time.time() - t0, 2))
@@ -177,21 +249,28 @@ def answer(question, doc=None, via="cli", model=None):
 
 def answer_stream(question, doc=None, via="cli", model=None):
     """Like answer(), but yields ("candidates", {...}) once the search is done, ("token", text) as the
-    answer text is written, and last ("done", the same dict that answer() returns)."""
+    answer text is written, and last ("done", the same dict that answer() returns). The first event is
+    ("route", "rag" or "chat"). A chat message has no candidates event."""
     t0 = time.time()
     model = model or os.environ["ANSWER_MODEL"]
     fields = dict(kind="ask", via=via, doc=doc, question=question[:300], model=model)
     try:
-        found, ctx, messages = _prepare(question, doc)
+        search_job = _start_search(question, doc)
+        picked = route(question)
+        yield "route", picked
+        if picked == "chat":
+            raw, usage = "", None
+            for ev in _stream(llm("answer"), model, _chat_messages(question)):
+                usage = ev.usage or usage
+                if ev.choices and ev.choices[0].delta.content:
+                    raw += ev.choices[0].delta.content
+                    yield "token", ev.choices[0].delta.content
+            yield "done", _chat_result(raw, usage, t0, fields)
+            return
+        found, ctx, messages = search_job.result()
         yield "candidates", {"candidates": _candidates(found), "score_kind": score_kind()}
-        client = llm("answer")
-        try:
-            stream = client.chat.completions.create(
-                model=model, temperature=0, messages=messages, stream=True, stream_options={"include_usage": True})
-        except BadRequestError:  # a provider that does not know stream_options: stream without token counts
-            stream = client.chat.completions.create(model=model, temperature=0, messages=messages, stream=True)
         raw, sent, usage = "", "", None
-        for ev in stream:
+        for ev in _stream(llm("answer"), model, messages):
             usage = ev.usage or usage
             if ev.choices:
                 raw += ev.choices[0].delta.content or ""
@@ -217,6 +296,8 @@ if __name__ == "__main__":
     else:
         cited = ", ".join(f"{s['doc']} p.{s['page']}" for s in out["citations"]) or "-"
         print(out["answer"])
+        if out["route"] == "chat":
+            sys.exit(0)
         print(f"\nCited: {cited}{'  (refused)' if out['refused'] else ''}  [{out['seconds']}s]")
         if out["rejected_citations"]:
             print("Rejected citations (page was not retrieved):", out["rejected_citations"])

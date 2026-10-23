@@ -142,6 +142,18 @@ describe("App streaming", () => {
   });
 });
 
+describe("App routing", () => {
+  it("shows a reply to a greeting with no sources and no candidates", async () => {
+    fakeServer({ ask: () => answer({ answer: "Hello! Ask me about your documents.", route: "chat", citations: [], retrieved: [] }) });
+    render(<App />);
+    await ask("hey");
+    expect(await screen.findByText(/Hello! Ask me about/)).toBeInTheDocument();
+    expect(await screen.findByText(/no search needed/)).toBeInTheDocument();
+    expect(screen.queryByText("Sources")).not.toBeInTheDocument();
+    expect(screen.queryByText(/candidates retrieved/)).not.toBeInTheDocument();
+  });
+});
+
 describe("App models", () => {
   it("lists the models and sends the chosen one", async () => {
     const { calls } = fakeServer({ models: { default: "m1", models: ["m1", "m2"] } });

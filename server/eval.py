@@ -2,6 +2,7 @@
 
 Retrieval (did every supporting page come back?) and answer quality (judge model)
 are scored separately. Unanswerable questions pass only if the system refuses.
+Chitchat questions (expected: CHAT) pass only if the router sends them away from the search.
 --retrieval-only skips the answer and judge calls, so it needs no LLM.
 """
 import json
@@ -51,13 +52,20 @@ def hit(item, chunks):
 def run(item):
     refuse = item["expected"] == "REFUSE"
     row = dict(id=item["id"], type=item["type"], q=item["q"], expected=item["expected"])
+    if item["expected"] == "CHAT":  # needs the router, so --retrieval-only skips it
+        row.update(retrieval_hit=None, answer_ok=None)
+        if not RETRIEVAL_ONLY:
+            a = answer(item["q"], DOC, via="eval")
+            row.update(got=a["answer"], route=a["route"], seconds=a["seconds"], tokens=a["tokens"],
+                       answer_ok=a["route"] == "chat", why=f"routed to {a['route']}")
+        return row
     if RETRIEVAL_ONLY:
         chunks = retrieve(item["q"], doc=DOC)
         row.update(retrieved_pages=sorted({p for c in chunks for p in c["pages"]}), retrieval_hit=hit(item, chunks),
                    answer_ok=None)
         return row
     a = answer(item["q"], DOC, via="eval")
-    row.update(got=a["answer"], retrieved_pages=a["retrieved_pages"], seconds=a["seconds"], tokens=a["tokens"],
+    row.update(got=a["answer"], route=a["route"], retrieved_pages=a["retrieved_pages"], seconds=a["seconds"], tokens=a["tokens"],
                retrieval_hit=hit(item, a["retrieved"]))
     if refuse:
         row["answer_ok"], row["why"] = a["refused"], "refused" if a["refused"] else "answered instead of refusing"
